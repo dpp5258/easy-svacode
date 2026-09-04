@@ -1,0 +1,13 @@
+/opt/SVA/SVA-backend/ruoyi-generator/src/main/java/com/ruoyi/generator/config/GenConfig.java
+/opt/SVA/SVA-backend/ruoyi-generator/src/main/java/com/ruoyi/generator/controller/GenController.java
+/opt/SVA/SVA-backend/ruoyi-generator/src/main/java/com/ruoyi/generator/domain/GenTable.java
+/opt/SVA/SVA-backend/ruoyi-generator/src/main/java/com/ruoyi/generator/domain/GenTableColumn.java
+/opt/SVA/SVA-backend/ruoyi-generator/src/main/java/com/ruoyi/generator/mapper/GenTableColumnMapper.java
+/opt/SVA/SVA-backend/ruoyi-generator/src/main/java/com/ruoyi/generator/mapper/GenTableMapper.java
+/opt/SVA/SVA-backend/ruoyi-generator/src/main/java/com/ruoyi/generator/service/GenTableColumnServiceImpl.java
+/opt/SVA/SVA-backend/ruoyi-generator/src/main/java/com/ruoyi/generator/service/GenTableServiceImpl.java
+/opt/SVA/SVA-backend/ruoyi-generator/src/main/java/com/ruoyi/generator/service/IGenTableColumnService.java
+/opt/SVA/SVA-backend/ruoyi-generator/src/main/java/com/ruoyi/generator/service/IGenTableService.java
+/opt/SVA/SVA-backend/ruoyi-generator/src/main/java/com/ruoyi/generator/util/GenUtils.java
+/opt/SVA/SVA-backend/ruoyi-generator/src/main/java/com/ruoyi/generator/util/VelocityInitializer.java
+/opt/SVA/SVA-backend/ruoyi-generator/src/main/java/com/ruoyi/generator/util/VelocityUtils.java
