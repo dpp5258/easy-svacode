@@ -6,7 +6,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <limits>
+#include <map>
+#include <mutex>
+#include <string>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace SVAAnalyzer
@@ -275,10 +281,251 @@ namespace SVAAnalyzer
             return maxDistance <= maxDisplacementPx;
         }
 
+        // ================== 睡岗 pose 时序状态机 (对齐 Python sleep_state_machine.py) ==================
+        // 触发通道: C1 连续低头 down_run≥T_suspect(容忍<gap_tol 呼吸间隙); C2 滑动窗口W内低头累计占比;
+        //           C3 趴桌 desk_run≥T_desk(hd≤θ_desk). 断供>GAP 清状态重新累计.
+        const double kSleepThetaDesk = 0.0;   // C3 趴桌更严低头阈值
+        const double kSleepWindowSec = 4.0;   // C2 滑动窗口 W
+        const double kSleepRatioP = 0.5;      // C2 最低占比 p
+        const double kSleepGapTolSec = 0.5;   // C1 段内间隙容忍 gap_tol (呼吸式续计)
+        const double kSleepGapSec = 1.5;      // 安静/目标丢失 GAP → reset
+        const double kSleepTDeskSec = 1.5;    // C3 趴桌持续 T_desk
+
+        struct SleepPoseState
+        {
+            int state = 0; // 0=NORMAL 1=SUSPECT 2=ALARM
+            int64_t lastFeedMs = 0; // R2: 最近一次 feed 时刻, 供定期清理
+            bool hasLast = false;
+            double lastT = 0.0;
+            double downRun = 0.0;
+            bool hasSegStart = false;
+            double segStartSec = 0.0;
+            double lastDownSec = 0.0;
+            bool hasLastDown = false;
+            double lastAnySec = 0.0;
+            bool hasLastAny = false;
+            double deskRun = 0.0;
+            struct WinItem
+            {
+                double t = 0.0;
+                bool down = false;
+                double dur = 0.0;
+            };
+            std::vector<WinItem> win;
+        };
+
+        struct SleepPoseKey
+        {
+            std::string control;
+            std::string rule;     // R1: 区分同一布控下的多条 sleep 规则, 避免状态互相串扰
+            int trackId = -1;
+            bool operator==(const SleepPoseKey &o) const { return control == o.control && rule == o.rule && trackId == o.trackId; }
+        };
+        struct SleepPoseKeyHash
+        {
+            size_t operator()(const SleepPoseKey &k) const
+            {
+                std::hash<std::string> hs;
+                return hs(k.control) ^ (hs(k.rule) * 0x9e3779b1u) ^ (static_cast<size_t>(k.trackId) * 2654435761u);
+            }
+        };
+        std::unordered_map<SleepPoseKey, SleepPoseState, SleepPoseKeyHash> gSleepPoseStates;
+        std::mutex gSleepPoseMtx;
+        int64_t gSleepLastPruneMs = 0; // R2: 定期清理超时状态
+
+        void resetSleepPoseState(SleepPoseState &s)
+        {
+            s = SleepPoseState();
+        }
+
         /**
-         * @brief Check sleep hit: object stationary + wide aspect ratio (person lying down).
+         * @brief 逐帧驱动单个目标的姿态状态机 (每 control+track 一份).
+         * @return true = 本帧处于 ALARM (达标当帧即 true, 持续报警持续 true)
          */
-        bool isSleepHit(const BehaviorRuleConfig &rule,
+        bool feedSleepPoseState(SleepPoseState &s, double tSec, float hd, bool ok,
+                                double thetaHd, double tSuspectSec)
+        {
+            if (!s.hasLast)
+            {
+                s.lastT = tSec;
+                s.hasLast = true;
+                return false;
+            }
+            double dt = tSec - s.lastT;
+            if (dt <= 0.0)
+            {
+                dt = 0.001;
+            }
+            // 断供保护: 距上帧超过 GAP(judge 过滤/目标消失) → 清状态, 本帧重新累计
+            if (dt > std::max(1.0, kSleepGapSec))
+            {
+                resetSleepPoseState(s);
+                s.lastT = tSec;
+                s.hasLast = true;
+                return false;
+            }
+            s.lastT = tSec;
+
+            const bool down = ok && (static_cast<double>(hd) <= thetaHd);
+            const bool desk = ok && (static_cast<double>(hd) <= kSleepThetaDesk);
+
+            // C2 滑动窗口: 剔除过期
+            const double windowStart = tSec - kSleepWindowSec;
+            while (!s.win.empty() && s.win.front().t < windowStart)
+            {
+                s.win.erase(s.win.begin());
+            }
+
+            SleepPoseState::WinItem item;
+            item.t = tSec;
+            item.down = down;
+            item.dur = dt;
+            bool trig = false;
+            if (s.state == 0) // NORMAL
+            {
+                if (down || desk)
+                {
+                    s.state = 1; // SUSPECT
+                    s.deskRun = desk ? dt : 0.0;
+                    if (down)
+                    {
+                        s.segStartSec = tSec;
+                        s.hasSegStart = true;
+                        s.downRun = 0.0; // 段起点即本帧, 累计在下一帧体现
+                        s.lastDownSec = tSec;
+                        s.hasLastDown = true;
+                    }
+                    else
+                    {
+                        s.downRun = 0.0;
+                        s.hasSegStart = false;
+                    }
+                    s.lastAnySec = tSec;
+                    s.hasLastAny = true;
+                    s.win.push_back(item);
+                }
+                else
+                {
+                    item.down = false;
+                    s.win.push_back(item);
+                }
+            }
+            else if (s.state == 1) // SUSPECT
+            {
+                if (down)
+                {
+                    const double gap = s.hasLastDown ? (tSec - s.lastDownSec) : 999.0;
+                    if (gap > kSleepGapTolSec)
+                    {
+                        s.segStartSec = tSec;
+                        s.hasSegStart = true;
+                    }
+                    if (s.hasSegStart)
+                    {
+                        s.downRun = tSec - s.segStartSec; // 段内时长(容忍<gap_tol间隙, 计入间隙)
+                    }
+                    else
+                    {
+                        s.downRun = dt;
+                    }
+                    s.lastDownSec = tSec;
+                    s.hasLastDown = true;
+                    s.lastAnySec = tSec;
+                    s.hasLastAny = true;
+                    s.win.push_back(item);
+                }
+                else
+                {
+                    if (s.hasLastDown && (tSec - s.lastDownSec) > kSleepGapTolSec)
+                    {
+                        s.hasSegStart = false;
+                        s.downRun = 0.0;
+                    }
+                    item.down = false;
+                    s.win.push_back(item);
+                }
+                s.deskRun = desk ? (s.deskRun + dt) : 0.0;
+                if (down || desk)
+                {
+                    s.lastAnySec = tSec;
+                    s.hasLastAny = true;
+                }
+                // C1: 段连续低头
+                if (s.downRun >= tSuspectSec)
+                {
+                    trig = true;
+                }
+                else
+                {
+                    // C2: 窗口内低头累计与占比
+                    double winDown = 0.0;
+                    for (size_t wi = 0; wi < s.win.size(); ++wi)
+                    {
+                        if (s.win[wi].down)
+                        {
+                            winDown += s.win[wi].dur;
+                        }
+                    }
+                    const double span = s.win.empty() ? 0.0 : (tSec - s.win.front().t);
+                    if (span >= 0.5 && winDown >= tSuspectSec && (winDown / span) >= kSleepRatioP)
+                    {
+                        trig = true;
+                    }
+                }
+                // C3: 趴桌
+                if (!trig && s.deskRun >= kSleepTDeskSec)
+                {
+                    trig = true;
+                }
+                if (trig)
+                {
+                    s.state = 2; // ALARM
+                    return true;
+                }
+                if (s.hasLastAny && (tSec - s.lastAnySec) >= kSleepGapSec)
+                {
+                    resetSleepPoseState(s);
+                }
+            }
+            else // state == 2 ALARM
+            {
+                if (down)
+                {
+                    s.lastDownSec = tSec;
+                    s.hasLastDown = true;
+                    s.lastAnySec = tSec;
+                    s.hasLastAny = true;
+                    s.win.push_back(item);
+                }
+                else if (desk)
+                {
+                    s.lastAnySec = tSec;
+                    s.hasLastAny = true;
+                    item.down = false;
+                    s.win.push_back(item);
+                }
+                else
+                {
+                    item.down = false;
+                    s.win.push_back(item);
+                }
+                if (s.hasLastAny && (tSec - s.lastAnySec) >= kSleepGapSec)
+                {
+                    resetSleepPoseState(s);
+                    return false;
+                }
+                return true;
+            }
+            return false;
+        }
+
+        /**
+         * @brief Check sleep hit.
+         * pose 引擎目标: 状态机判 "静止+持续低头" (C1/C2/C3, 认坐姿低头/伏案趴桌);
+         * 旧平台判据(横躺宽高比)在 pose 未命中或非 pose 算法时兜底, 保证躺姿仍可报.
+         */
+        bool isSleepHit(const std::string &controlCode,
+                        const BehaviorRuleConfig &rule,
                         const DetectObject &detect,
                         const RegionTemporalState *regionState)
         {
@@ -291,19 +538,61 @@ namespace SVAAnalyzer
                 return false;
             }
 
-            const int64_t thresholdMs = std::max<int64_t>(1000, rule.thresholdMs > 0 ? rule.thresholdMs : 15000);
-            const int64_t activeDurationMs = regionState ? regionState->inRegionDurationMs : detect.dwellMs;
-            if (activeDurationMs < thresholdMs)
-            {
-                return false;
-            }
-
             const double maxSpeedPxPerSec = rule.maxSpeedPxPerSec > 0.0 ? rule.maxSpeedPxPerSec : 6.0;
             if (detect.speedPxPerSec > maxSpeedPxPerSec)
             {
                 return false;
             }
             if (detect.motionState == "moving")
+            {
+                return false;
+            }
+
+            // ---- pose 判据(状态机): 静止 + poseOk 且 hd≤θ_hd 持续 ≥T_suspect ----
+            const bool poseCapable = !detect.keypoints.empty()
+                || detect.source_algorithm.find("pose") != std::string::npos;
+            if (poseCapable)
+            {
+                const double thetaHd = rule.hdThreshold > 0.0 ? rule.hdThreshold : 0.12;
+                const double tSuspectSec = rule.thresholdMs > 0
+                    ? static_cast<double>(rule.thresholdMs) / 1000.0
+                    : 15.0;
+                const double tSec = static_cast<double>(detect.lastSeenTimestampMs) / 1000.0;
+                SleepPoseKey key;
+                key.control = controlCode;
+                key.rule = rule.id;
+                key.trackId = detect.trackId;
+                std::lock_guard<std::mutex> guard(gSleepPoseMtx);
+                // R2: 每 30s 清理一次超时(>30s 未更新)的状态, 防止 map 长期增长
+                const int64_t nowMs = detect.lastSeenTimestampMs;
+                if (gSleepLastPruneMs == 0 || (nowMs - gSleepLastPruneMs) >= 30000)
+                {
+                    for (auto it = gSleepPoseStates.begin(); it != gSleepPoseStates.end();)
+                    {
+                        if (it->second.lastFeedMs != 0 && (nowMs - it->second.lastFeedMs) >= 30000)
+                        {
+                            it = gSleepPoseStates.erase(it);
+                        }
+                        else
+                        {
+                            ++it;
+                        }
+                    }
+                    gSleepLastPruneMs = nowMs;
+                }
+                SleepPoseState &st = gSleepPoseStates[key];
+                st.lastFeedMs = nowMs;
+                if (feedSleepPoseState(st, tSec, detect.hd, detect.poseOk, thetaHd, tSuspectSec))
+                {
+                    return true;
+                }
+                // 未命中继续走旧判据兜底(如横躺时关键点不可见)
+            }
+
+            // ---- 旧平台判据: 区域内停留时长 + 横躺宽高比 + 位移 ----
+            const int64_t thresholdMs = std::max<int64_t>(1000, rule.thresholdMs > 0 ? rule.thresholdMs : 15000);
+            const int64_t activeDurationMs = regionState ? regionState->inRegionDurationMs : detect.dwellMs;
+            if (activeDurationMs < thresholdMs)
             {
                 return false;
             }
@@ -601,7 +890,7 @@ namespace SVAAnalyzer
                 }
 
                 // --- sleep ---
-                if (rule.behaviorType == "sleep" && isSleepHit(rule, detect, regionState))
+                if (rule.behaviorType == "sleep" && isSleepHit(control.code, rule, detect, regionState))
                 {
                     decision.matched = true;
                     decision.ruleId = rule.id;

@@ -53,6 +53,12 @@ namespace SVAAnalyzer
         std::string source_algorithm;
         bool happen = false;
 
+        // Pose keypoints (from pose models, e.g. on_yolo11n_pose; source-image coords, COCO17 order)
+        std::vector<cv::Point2f> keypoints;   // 17 points (x,y); empty when model has no pose output
+        std::vector<float> keypointConf;      // 17 per-point confidences
+        float hd = 0.0f;                      // head-down ratio: (shoulderMidY - headTopY)/boxH; 低头→小/负
+        bool poseOk = false;                  // head + both shoulders visible enough for pose judgement
+
         // Temporal tracking (from TemporalProcessor)
         int trackId = -1;
         int64_t firstSeenTimestampMs = 0;

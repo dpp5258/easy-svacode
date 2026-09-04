@@ -1,4 +1,4 @@
-﻿#ifndef ANALYZER_CONTROL_H
+#ifndef ANALYZER_CONTROL_H
 #define ANALYZER_CONTROL_H
 
 #include <string>
@@ -101,6 +101,7 @@ namespace SVAAnalyzer
 		double distanceThresholdPx = 0.0;
 		double maxSpeedPxPerSec = 0.0;
 		double maxDisplacementPx = 0.0;
+		double hdThreshold = 0.0; // 睡岗 pose: 低头判据 hd ≤ hdThreshold (0 时用默认 0.12)
 		double directionAngleDeg = 0.0;
 		double directionToleranceDeg = 30.0;
 		std::string sequenceId;
@@ -783,6 +784,13 @@ namespace SVAAnalyzer
 					tryParseJsonNumber(item["radiusPx"], displacementThreshold))
 				{
 					rule.maxDisplacementPx = displacementThreshold;
+				}
+				double hdThreshold = 0.0;
+				if (tryParseJsonNumber(item["hdThreshold"], hdThreshold) ||
+					tryParseJsonNumber(item["thetaHd"], hdThreshold) ||
+					tryParseJsonNumber(item["theta_hd"], hdThreshold))
+				{
+					rule.hdThreshold = hdThreshold;
 				}
 				if (item["sequenceId"].isString())
 				{

@@ -1,4 +1,4 @@
-﻿#include "Scheduler.h"
+#include "Scheduler.h"
 #include "Config.h"
 #include "Control.h"
 #include "Worker.h"
@@ -141,6 +141,10 @@ namespace SVAAnalyzer
             delete on_yolo26n_80;
             on_yolo26n_80 = nullptr;
         }
+        if (on_pose_sleep) {
+            delete on_pose_sleep;
+            on_pose_sleep = nullptr;
+        }
 
         clearAlarmQueue();
         clearDetectFrameQueue();
@@ -187,7 +191,12 @@ namespace SVAAnalyzer
         modelPath = mConfig->modelDir + "/yolo26s.onnx";
         on_yolo26n_80 = new AlgorithmOnYolo(mConfig, modelPath, classNames, "on_yolo26n_80");
 
-        LOGI("initAlgorithm() end - total ONNX models loaded: 2");
+        LOGI("初始化 on_yolo11n_pose (yolo11n-pose.onnx, 睡岗姿态)");
+        modelPath = mConfig->modelDir + "/yolo11n-pose.onnx";
+        std::vector<std::string> poseClassNames = { "person" };
+        on_pose_sleep = new AlgorithmOnYolo(mConfig, modelPath, poseClassNames, "on_yolo11n_pose");
+
+        LOGI("initAlgorithm() end - total ONNX models loaded: 3");
         return true;
     }
     void Scheduler::loop()
