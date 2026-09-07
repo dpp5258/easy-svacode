@@ -1,4 +1,4 @@
-﻿#ifndef ANALYZER_ALGORITHMONYOLO_H
+#ifndef ANALYZER_ALGORITHMONYOLO_H
 #define ANALYZER_ALGORITHMONYOLO_H
 
 #include <string>
@@ -15,6 +15,7 @@ namespace SVAAnalyzer
 	{
 		DenseWithNms,
 		DirectDetections,
+		Pose,
 	};
 
 	/**
@@ -63,6 +64,9 @@ namespace SVAAnalyzer
 		void initPostprocessProfile(const std::string &algorithmCode);
 		bool decodeDenseOutputWithNms(const float *pdata, int imageWidth, int imageHeight, int paddedImageSize, std::vector<DetectObject> &detects);
 		bool decodeDirectDetections(const float *pdata, int imageWidth, int imageHeight, std::vector<DetectObject> &detects);
+		// (1,56,8400): 4 box + 1 conf + 17*3 kpts(x,y,conf); letterbox gray-114 input (scale/pad offsets in 640 space)
+		bool decodePoseOutput(const float *pdata, int imageWidth, int imageHeight,
+							  float scale, int padX, int padY, std::vector<DetectObject> &detects);
 	};
 	class AlgorithmOnYolo : public Algorithm
 	{

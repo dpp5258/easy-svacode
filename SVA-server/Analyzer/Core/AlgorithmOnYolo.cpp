@@ -1,4 +1,4 @@
-﻿#include "AlgorithmOnYolo.h"
+#include "AlgorithmOnYolo.h"
 #include "Config.h"
 #include "Utils/Log.h"
 #include "Utils/Common.h"
@@ -17,6 +17,9 @@ namespace SVAAnalyzer
         mEnv = Ort::Env(OrtLoggingLevel::ORT_LOGGING_LEVEL_WARNING, "YOLO");
         mSessionOptions = Ort::SessionOptions();
         mSessionOptions.SetGraphOptimizationLevel(ORT_ENABLE_ALL);
+        // CPU 友好: 限制推理线程数, 避免 ORT 默认吃满全核(多算法并发时整机过载)
+        mSessionOptions.SetIntraOpNumThreads(4);
+        mSessionOptions.SetInterOpNumThreads(1);
 
         // std::cout << "onnxruntime inference try to use GPU Device" << std::endl;
         // OrtSessionOptionsAppendExecutionProvider_CUDA(session_options, 0);
@@ -131,6 +134,8 @@ namespace SVAAnalyzer
             mSessionOptions.release();
             mSessionOptions = Ort::SessionOptions();
             mSessionOptions.SetGraphOptimizationLevel(ORT_ENABLE_ALL);
+            mSessionOptions.SetIntraOpNumThreads(4);
+            mSessionOptions.SetInterOpNumThreads(1);
             mGpuEnabled = false;
             mActiveProvider = "CPU";
             mSession = createSession();
@@ -164,10 +169,20 @@ namespace SVAAnalyzer
                  static_cast<long long>(mOutputDims[2]),
                  mActiveProvider.c_str());
         }
-        else
+        else if (mDecoder != YoloOutputDecoder::Pose)
         {
+            // Pose decoder is chosen by algorithm code (initPostprocessProfile),
+            // the last-dim heuristic below is for dense detect heads only.
             mDecoder = YoloOutputDecoder::DenseWithNms;
             LOGI("AlgorithmOnYolo output dims=[%lld,%lld,%lld] decoder=dense_with_nms provider=%s",
+                 static_cast<long long>(mOutputDims[0]),
+                 static_cast<long long>(mOutputDims[1]),
+                 static_cast<long long>(mOutputDims[2]),
+                 mActiveProvider.c_str());
+        }
+        else
+        {
+            LOGI("AlgorithmOnYolo output dims=[%lld,%lld,%lld] decoder=pose provider=%s",
                  static_cast<long long>(mOutputDims[0]),
                  static_cast<long long>(mOutputDims[1]),
                  static_cast<long long>(mOutputDims[2]),
@@ -198,6 +213,12 @@ namespace SVAAnalyzer
         {
             mDecoder = YoloOutputDecoder::DirectDetections;
             LOGI("AlgorithmOnYolo profile=%s decoder=direct_detections preprocess=direct_resize_bgr score=0.25", algorithmCode.data());
+            return;
+        }
+        if (algorithmCode == "on_yolo11n_pose" || algorithmCode == "on_pose_sleep")
+        {
+            mDecoder = YoloOutputDecoder::Pose;
+            LOGI("AlgorithmOnYolo profile=%s decoder=pose(56ch) preprocess=letterbox_gray114_rgb score=0.25", algorithmCode.data());
             return;
         }
         LOGI("AlgorithmOnYolo profile=%s decoder=dense_with_nms preprocess=square_rgb score=0.50 nms=0.50", algorithmCode.data());
@@ -372,6 +393,147 @@ namespace SVAAnalyzer
         return true;
     }
 
+    bool OnnxRuntimeEngine::decodePoseOutput(const float *pdata, int imageWidth, int imageHeight,
+                                             float scale, int padX, int padY, std::vector<DetectObject> &detects)
+    {
+        const float scoreThreshold = 0.25f;
+        const float nmsThreshold = 0.5f;
+        const float ckpThreshold = 0.30f; // keypoint visibility, aligned with Python person_feature(ckp=0.30)
+        const int anchors = mOutputRow;
+        if (anchors <= 0 || mOutputDim < 56)
+        {
+            LOGE("AlgorithmOnYolo invalid pose output channels=%d anchors=%d", mOutputDim, anchors);
+            return false;
+        }
+
+        struct PoseCandidate
+        {
+            int anchor;
+            float cx;
+            float cy;
+            float w;
+            float h;
+            float conf;
+        };
+        std::vector<PoseCandidate> cands;
+        std::vector<cv::Rect> boxes;
+        std::vector<float> confidences;
+        for (int i = 0; i < anchors; ++i)
+        {
+            const float conf = pdata[4 * anchors + i];
+            if (!(conf > scoreThreshold))
+            {
+                continue;
+            }
+            const float cx = pdata[i];
+            const float cy = pdata[1 * anchors + i];
+            const float w = pdata[2 * anchors + i];
+            const float h = pdata[3 * anchors + i];
+            if (!std::isfinite(cx) || !std::isfinite(cy) || !std::isfinite(w) || !std::isfinite(h) || w <= 0.0f || h <= 0.0f)
+            {
+                continue;
+            }
+            PoseCandidate c;
+            c.anchor = i;
+            c.cx = cx;
+            c.cy = cy;
+            c.w = w;
+            c.h = h;
+            c.conf = conf;
+            cands.push_back(c);
+            // NMS box in letterbox canvas space (640 px)
+            int bx0 = static_cast<int>(std::lround(cx - 0.5f * w));
+            int by0 = static_cast<int>(std::lround(cy - 0.5f * h));
+            int bw = static_cast<int>(std::lround(w));
+            int bh = static_cast<int>(std::lround(h));
+            boxes.push_back(cv::Rect(bx0, by0, bw, bh));
+            confidences.push_back(conf);
+        }
+
+        std::vector<int> nmsIdx;
+        if (!boxes.empty())
+        {
+            cv::dnn::NMSBoxes(boxes, confidences, scoreThreshold, nmsThreshold, nmsIdx);
+        }
+
+        for (size_t n = 0; n < nmsIdx.size(); ++n)
+        {
+            const PoseCandidate &c = cands[nmsIdx[n]];
+            const int a = c.anchor;
+
+            // read 17 keypoints (canvas space) + confidences
+            std::vector<float> kx(17, 0.0f), ky(17, 0.0f), kc(17, 0.0f);
+            for (int kp = 0; kp < 17; ++kp)
+            {
+                kx[kp] = pdata[(5 + 3 * kp) * anchors + a];
+                ky[kp] = pdata[(6 + 3 * kp) * anchors + a];
+                kc[kp] = pdata[(7 + 3 * kp) * anchors + a];
+            }
+
+            // head-down feature (canvas coords; ratio is scale-invariant), mirrors Python person_feature:
+            //   hd = (shoulderMidY - headTopY) / boxH ; head kpts = COCO 0..4 (nose/eyes/ears)
+            float headTopY = 1e9f;
+            bool headOk = false;
+            for (int j = 0; j <= 4; ++j)
+            {
+                if (kc[j] >= ckpThreshold && ky[j] < headTopY)
+                {
+                    headTopY = ky[j];
+                    headOk = true;
+                }
+            }
+            bool shOk = (kc[5] >= ckpThreshold && kc[6] >= ckpThreshold);
+            float hdVal = 0.0f;
+            bool poseOk = false;
+            if (headOk && shOk)
+            {
+                const float boxH = std::max(c.h, 1e-6f);
+                const float shY = 0.5f * (ky[5] + ky[6]);
+                hdVal = (shY - headTopY) / boxH;
+                poseOk = true;
+            }
+
+            // map box + keypoints back to source-image coordinates
+            float sx0 = (c.cx - 0.5f * c.w - padX) / scale;
+            float sy0 = (c.cy - 0.5f * c.h - padY) / scale;
+            float sx1 = (c.cx + 0.5f * c.w - padX) / scale;
+            float sy1 = (c.cy + 0.5f * c.h - padY) / scale;
+            int left = static_cast<int>(sx0);
+            int top = static_cast<int>(sy0);
+            int right = static_cast<int>(sx1);
+            int bottom = static_cast<int>(sy1);
+            left = std::max(0, std::min(left, imageWidth - 1));
+            top = std::max(0, std::min(top, imageHeight - 1));
+            right = std::max(0, std::min(right, imageWidth));
+            bottom = std::max(0, std::min(bottom, imageHeight));
+            if (right <= left || bottom <= top)
+            {
+                continue;
+            }
+
+            DetectObject detect;
+            detect.x1 = left;
+            detect.y1 = top;
+            detect.x2 = right;
+            detect.y2 = bottom;
+            detect.class_id = 0;
+            detect.class_name = mClassNames.empty() ? "person" : mClassNames[0];
+            detect.class_score = c.conf;
+            detect.hd = hdVal;
+            detect.poseOk = poseOk;
+            detect.keypoints.reserve(17);
+            detect.keypointConf.reserve(17);
+            for (int kp = 0; kp < 17; ++kp)
+            {
+                detect.keypoints.push_back(cv::Point2f((kx[kp] - padX) / scale, (ky[kp] - padY) / scale));
+                detect.keypointConf.push_back(kc[kp]);
+            }
+            detects.push_back(detect);
+        }
+
+        return true;
+    }
+
     bool OnnxRuntimeEngine::runInference(cv::Mat &image, std::vector<DetectObject> &detects)
     {
         detects.clear();
@@ -385,9 +547,32 @@ namespace SVAAnalyzer
 
         cv::Mat inputImage;
         int paddedImageSize = std::max(image_h, image_w);
+        float poseScale = 1.0f;
+        int posePadX = 0;
+        int posePadY = 0;
         if (mDecoder == YoloOutputDecoder::DirectDetections)
         {
             inputImage = image;
+        }
+        else if (mDecoder == YoloOutputDecoder::Pose)
+        {
+            // letterbox gray-114 (RGB order in model), aligned with Python prototype:
+            // resize to 640 keeping aspect, center-pad with 114; scale = nw/image_w
+            poseScale = std::min(static_cast<float>(mInputWidth) / static_cast<float>(image_w),
+                                 static_cast<float>(mInputHeight) / static_cast<float>(image_h));
+            int nw = static_cast<int>(std::lround(image_w * poseScale));
+            int nh = static_cast<int>(std::lround(image_h * poseScale));
+            if (nw <= 0 || nh <= 0)
+            {
+                LOGE("AlgorithmOnYolo pose letterbox invalid size nw=%d nh=%d", nw, nh);
+                return false;
+            }
+            cv::Mat resized;
+            cv::resize(image, resized, cv::Size(nw, nh), 0.0, 0.0, cv::INTER_LINEAR);
+            inputImage = cv::Mat(mInputHeight, mInputWidth, CV_8UC3, cv::Scalar(114, 114, 114));
+            posePadX = (mInputWidth - nw) / 2;
+            posePadY = (mInputHeight - nh) / 2;
+            resized.copyTo(inputImage(cv::Rect(posePadX, posePadY, nw, nh)));
         }
         else
         {
@@ -396,7 +581,8 @@ namespace SVAAnalyzer
             image.copyTo(inputImage(roi));
         }
 
-        const bool swapRB = (mDecoder == YoloOutputDecoder::DenseWithNms);
+        // 通道序: Dense/Pose 模型按 RGB 训练(与 Python 原型一致), Direct 检测(yolo26s)按平台既有 BGR
+        const bool swapRB = (mDecoder != YoloOutputDecoder::DirectDetections);
         cv::Mat blob = cv::dnn::blobFromImage(inputImage, 1 / 255.0, cv::Size(mInputWidth, mInputHeight), cv::Scalar(0, 0, 0), swapRB, false);
         size_t tpixels = static_cast<size_t>(mInputHeight * mInputWidth * 3);
         std::array<int64_t, 4> input_shape_info{1, 3, mInputHeight, mInputWidth};
@@ -423,6 +609,10 @@ namespace SVAAnalyzer
         if (mDecoder == YoloOutputDecoder::DirectDetections)
         {
             return decodeDirectDetections(pdata, image_w, image_h, detects);
+        }
+        if (mDecoder == YoloOutputDecoder::Pose)
+        {
+            return decodePoseOutput(pdata, image_w, image_h, poseScale, posePadX, posePadY, detects);
         }
         return decodeDenseOutputWithNms(pdata, image_w, image_h, paddedImageSize, detects);
     }
