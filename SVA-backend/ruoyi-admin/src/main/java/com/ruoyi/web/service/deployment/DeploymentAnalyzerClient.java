@@ -72,6 +72,16 @@ public class DeploymentAnalyzerClient
 
         String apeId = task.getDeviceId();
         String streamUrl = buildStreamUrl(bindingConfig, apeId);
+        String streamApp = bindingConfig.zlmApp;
+        String streamName = apeId;
+        String streamCode = apeId;
+        HDevice gbDevice = hDeviceMapper.selectDeviceByApeId(apeId);
+        if (gbDevice != null && "GB28181".equalsIgnoreCase(gbDevice.getDevice_type()))
+        {
+            streamApp = "rtp";
+            streamName = gbDevice.getGb_id() + "_" + StringUtils.nvl(gbDevice.getGb_channel_id(), "");
+            streamCode = streamName;
+        }
 
         boolean pushStream = Boolean.TRUE.equals(task.getPushEnabled());
         boolean frontendOverlayEnabled = Boolean.TRUE.equals(task.getFrontendOverlayEnabled());
@@ -93,9 +103,9 @@ public class DeploymentAnalyzerClient
 
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("code", task.getDeploymentId());
-        payload.put("streamCode", apeId);
-        payload.put("streamApp", bindingConfig.zlmApp);
-        payload.put("streamName", apeId);
+        payload.put("streamCode", streamCode);
+        payload.put("streamApp", streamApp);
+        payload.put("streamName", streamName);
         payload.put("streamUrl", streamUrl);
         payload.put("pushStream", pushStream);
         if (pushStream)
@@ -488,6 +498,14 @@ public class DeploymentAnalyzerClient
         {
             return null;
         }
+        HDevice device = hDeviceMapper.selectDeviceByApeId(apeId);
+        if (device != null && "GB28181".equalsIgnoreCase(device.getDevice_type()))
+        {
+            // 国标流: rtsp://zlm:rtsp/rtp/{设备}_{通道}
+            String stream = device.getGb_id() + "_" + StringUtils.nvl(device.getGb_channel_id(), "");
+            return "rtsp://" + config.zlmHost + ":" + config.zlmMediaRtspPort + "/rtp/" + stream;
+        }
+        // 原逻辑: rtsp://zlm:rtsp/{app}/{apeId}
         return "rtsp://" + config.zlmHost + ":" + config.zlmMediaRtspPort + "/" + config.zlmApp + "/" + apeId;
     }
 

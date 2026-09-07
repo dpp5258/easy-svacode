@@ -25,6 +25,7 @@ import org.springframework.web.client.RestTemplate;
 import org.springframework.web.util.UriComponentsBuilder;
 import org.springframework.stereotype.Component;
 import org.springframework.stereotype.Service;
+import org.springframework.scheduling.annotation.Scheduled;
 
 import jakarta.annotation.PostConstruct;
 import java.util.HashMap;
@@ -42,6 +43,10 @@ public class HDeviceServiceImpl implements HDeviceService {
 
     private static final String STREAM_SOURCE_TYPE_DIRECT = "DIRECT";
     private static final String STREAM_SOURCE_TYPE_PLATFORM = "PLATFORM";
+    private static final String DEVICE_TYPE_GB28181 = "GB28181";
+    private static final String DEVICE_TYPE_RTSP = "RTSP";
+    private static final String GB_STATUS_ONLINE = "ONLINE";
+    private static final String GB_STATUS_OFFLINE = "OFFLINE";
     private static final int MAX_APE_ID_GENERATE_RETRY = 20;
     private static final Pattern STREAM_NAME_PATTERN = Pattern.compile("[^A-Za-z0-9_-]");
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
@@ -67,6 +72,9 @@ public class HDeviceServiceImpl implements HDeviceService {
 
     @Autowired(required = false)
     private RestTemplate restTemplate;
+
+    @Autowired
+    private WvpClient wvpClient;
 
     @PostConstruct
     private void initRestTemplate() {
@@ -446,6 +454,19 @@ public class HDeviceServiceImpl implements HDeviceService {
             throw new ServiceException("设备不存在: " + apeId);
         }
 
+        if (isGbDevice(existedDevice)) {
+            Map<String, Object> gb = buildGb28181Play(existedDevice);
+            Object gbPlayUrl = gb.get("playUrl");
+            if (gbPlayUrl != null) {
+                hDeviceMapper.updatePlayUrlByApeId(apeId, String.valueOf(gbPlayUrl));
+            }
+            int gbUpdated = hDeviceMapper.updateMonitorStateByApeId(apeId, MONITOR_STATUS_RUNNING);
+            if (gbUpdated <= 0) {
+                throw new ServiceException("启动监控失败: " + apeId);
+            }
+            return gbUpdated;
+        }
+
         String startAddProxyUrl = buildDirectAddProxyUrl(existedDevice);
         String startPlayUrl = buildDirectPlayUrl(existedDevice);
         if (isDirectDevice(existedDevice)) {
@@ -485,6 +506,13 @@ public class HDeviceServiceImpl implements HDeviceService {
             throw new ServiceException("设备不存在: " + apeId);
         }
 
+        if (isGbDevice(existedDevice)) {
+            wvpClient.playStop(existedDevice.getGb_id(), existedDevice.getGb_channel_id());
+            hDeviceMapper.updateMonitorStateByApeId(apeId, MONITOR_STATUS_STOPPED);
+            hDeviceMapper.updatePlayUrlByApeId(apeId, null);
+            return 1;
+        }
+
         boolean directProxyDeleted = false;
         if (isDirectDevice(existedDevice) && StringUtils.isNotBlank(existedDevice.getZlm_proxy_key())) {
             try {
@@ -517,6 +545,32 @@ public class HDeviceServiceImpl implements HDeviceService {
             throw new ServiceException("设备不存在: " + apeId);
         }
 
+        if (isGbDevice(device)) {
+            String gbPlayUrl = device.getPlay_url();
+            if (StringUtils.isBlank(gbPlayUrl)) {
+                Map<String, Object> gb = buildGb28181Play(device);
+                gbPlayUrl = String.valueOf(gb.getOrDefault("playUrl", ""));
+            }
+            Map<String, Object> gbResult = new HashMap<>();
+            gbResult.put("apeId", device.getApe_id());
+            gbResult.put("name", device.getName());
+            gbResult.put("streamSourceType", device.getStream_source_type());
+            gbResult.put("deviceType", device.getDevice_type());
+            gbResult.put("monitorStatus", device.getMonitor_status());
+            gbResult.put("playUrl", gbPlayUrl);
+            gbResult.put("gbId", device.getGb_id());
+            gbResult.put("gbChannelId", device.getGb_channel_id());
+            gbResult.put("status", device.getStatus());
+            gbResult.put("supportedMonitorStatuses", new String[] {
+                MONITOR_STATUS_RUNNING,
+                MONITOR_STATUS_STOPPED,
+                MONITOR_STATUS_STARTING,
+                MONITOR_STATUS_STOPPING,
+                MONITOR_STATUS_ERROR
+            });
+            return gbResult;
+        }
+
         String previewAddProxyUrl = buildDirectAddProxyUrl(device);
         String previewPlayUrl = device.getPlay_url();
         if (StringUtils.isBlank(previewPlayUrl)) {
@@ -547,6 +601,163 @@ public class HDeviceServiceImpl implements HDeviceService {
 
     private boolean isDirectDevice(HDevice device) {
         return device != null && STREAM_SOURCE_TYPE_DIRECT.equalsIgnoreCase(device.getStream_source_type());
+    }
+
+    private boolean isGbDevice(HDevice device) {
+        return device != null && DEVICE_TYPE_GB28181.equalsIgnoreCase(device.getDevice_type());
+    }
+
+    /** 国标流 streamId = {设备}_{通道}（WVP 生成，已实测）。 */
+    private String gbStreamId(HDevice device) {
+        if (device == null) {
+            return null;
+        }
+        return device.getGb_id() + "_" + StringUtils.nvl(device.getGb_channel_id(), "");
+    }
+
+    /** GB28181 点播：触发 WVP play → 返回 ws-flv，并回写 play_url / streamId。 */
+    private Map<String, Object> buildGb28181Play(HDevice device) {
+        if (StringUtils.isBlank(device.getGb_id()) || StringUtils.isBlank(device.getGb_channel_id())) {
+            throw new ServiceException("国标设备缺少 gb_id / gb_channel_id");
+        }
+        Map<String, Object> play = wvpClient.playStart(device.getGb_id(), device.getGb_channel_id());
+        String streamId = String.valueOf(play.getOrDefault("stream", ""));
+        String wsFlv = String.valueOf(play.getOrDefault("wsFlv", ""));
+        if (StringUtils.isBlank(wsFlv)) {
+            // 兜底按约定拼 ws://zlm:9992/rtp/{streamId}.live.flv
+            ZlmServer z = resolveEnabledZlmServer(device);
+            if (z != null && StringUtils.isNotBlank(streamId)) {
+                wsFlv = "ws://" + z.getHost() + ":" + z.getMedia_http_port() + "/rtp/" + streamId + ".live.flv";
+            }
+        }
+        if (StringUtils.isNotBlank(wsFlv)) {
+            hDeviceMapper.updatePlayUrlByApeId(device.getApe_id(), wsFlv);
+        }
+        Map<String, Object> r = new HashMap<>();
+        r.put("apeId", device.getApe_id());
+        r.put("playUrl", wsFlv);
+        r.put("streamId", streamId);
+        r.put("monitorStatus", MONITOR_STATUS_RUNNING);
+        return r;
+    }
+
+    /** 判定国标流是否上线：ZLM getMediaInfo(app=rtp, stream={设备}_{通道}) code==0。 */
+    private boolean zlmStreamOnline(HDevice device) {
+        if (StringUtils.isBlank(device.getGb_id())) {
+            return false;
+        }
+        String stream = gbStreamId(device);
+        ZlmServer z = resolveEnabledZlmServer(device);
+        if (z == null || StringUtils.isBlank(z.getHost()) || z.getApi_port() == null) {
+            return false;
+        }
+        String url = UriComponentsBuilder.fromUriString("http://" + z.getHost() + ":" + z.getApi_port() + "/index/api/getMediaInfo")
+            .queryParam("secret", StringUtils.nvl(z.getSecret(), ""))
+            .queryParam("vhost", "__defaultVhost__")
+            .queryParam("app", "rtp")
+            .queryParam("schema", "rtsp")
+            .queryParam("stream", stream)
+            .build(true).toUriString();
+        try {
+            JsonNode root = OBJECT_MAPPER.readTree(restTemplate.getForEntity(url, String.class).getBody());
+            return parseCode(root.path("code").asText()) == 0;
+        } catch (Exception e) {
+            log.warn("查询ZLM国标流失败 stream={} err={}", stream, e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * 定时同步：从 WVP 拉设备+通道 → upsert h_device；再用 ZLM getMediaList 判定在线。
+     * 采用轮询（不接管 ZLM hook，避免破坏 WVP 鉴权/点播链路）。
+     */
+    @Scheduled(initialDelay = 15000L, fixedDelay = 10000L)
+    public void syncGbDevices() {
+        try {
+            syncGbDevicesOnce();
+        } catch (Exception e) {
+            log.warn("同步国标设备失败: {}", e.getMessage());
+        }
+    }
+
+    /** 供手动调用 / 测试复用。 */
+    public void syncGbDevicesOnce() {
+        com.fasterxml.jackson.databind.JsonNode devices = wvpClient.listDevices();
+        if (devices == null || !devices.isArray()) {
+            return;
+        }
+        for (com.fasterxml.jackson.databind.JsonNode d : devices) {
+            String uId = d.path("ID").asText("");
+            if (StringUtils.isBlank(uId)) {
+                continue;
+            }
+            boolean online = d.path("Online").asBoolean(false);
+            HDevice existing = hDeviceMapper.selectByGbId(uId);
+            HDevice row = new HDevice();
+            row.setApe_id(uId);
+            row.setGb_id(uId);
+            row.setName(StringUtils.nvl(d.path("Name").asText(""), uId));
+            row.setChannel_count(d.path("ChannelCount").asInt(0));
+            row.setStatus(online ? GB_STATUS_ONLINE : GB_STATUS_OFFLINE);
+            row.setIs_online(online ? "1" : "0");
+            row.setSip_server("wvp");
+            if (existing == null) {
+                hDeviceMapper.upsertGbDevice(row);
+            } else {
+                // 已存在（可能来自 WVP 或手工）→ 更新，避免重复插入（h_device.ape_id 非唯一键）
+                row.setApe_id(existing.getApe_id());
+                hDeviceMapper.updateDevice(row);
+            }
+            if (online) {
+                syncGbChannels(uId);
+            }
+        }
+        // 注意：设备"上线/离线"以 WVP Online 为准；不得用"ZLM 是否有流"覆盖（无流≠设备离线）。
+    }
+
+    /** 拉某设备的通道，取第一个通道写入 gb_channel_id（一个设备通常一个摄像头通道）。 */
+    private void syncGbChannels(String deviceId) {
+        try {
+            com.fasterxml.jackson.databind.JsonNode channels = wvpClient.listChannels(deviceId);
+            if (channels == null || !channels.isArray() || channels.size() == 0) {
+                return;
+            }
+            com.fasterxml.jackson.databind.JsonNode ch = channels.get(0);
+            String channelId = ch.path("ID").asText("");
+            if (StringUtils.isBlank(channelId)) {
+                return;
+            }
+            HDevice update = new HDevice();
+            update.setApe_id(deviceId);
+            update.setGb_channel_id(channelId);
+            update.setChannel_count(channels.size());
+            update.setIs_online(ch.path("DeviceOnline").asBoolean(false) ? "1" : "0");
+            update.setStatus(ch.path("DeviceOnline").asBoolean(false) ? GB_STATUS_ONLINE : GB_STATUS_OFFLINE);
+            hDeviceMapper.updateDevice(update);
+        } catch (Exception e) {
+            log.warn("同步国标通道失败 deviceId={} err={}", deviceId, e.getMessage());
+        }
+    }
+
+    /** 用 ZLM 流在线情况刷新国标设备在线状态（双源判定）。 */
+    private void refreshGbOnlineStatus() {
+        HDevice query = new HDevice();
+        query.setDevice_type(DEVICE_TYPE_GB28181);
+        List<HDevice> gbDevices = hDeviceMapper.selectDeviceList(query);
+        if (gbDevices == null) {
+            return;
+        }
+        for (HDevice d : gbDevices) {
+            if (StringUtils.isBlank(d.getGb_id())) {
+                continue;
+            }
+            boolean streamOnline = zlmStreamOnline(d);
+            String newStatus = streamOnline ? GB_STATUS_ONLINE : GB_STATUS_OFFLINE;
+            String newIsOnline = streamOnline ? "1" : "0";
+            if (!newStatus.equals(StringUtils.nvl(d.getStatus(), ""))) {
+                hDeviceMapper.updateStatusByApeId(d.getApe_id(), newStatus, newIsOnline);
+            }
+        }
     }
 
     private String normalizeOrgIndex(String orgIndex) {

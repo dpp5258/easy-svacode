@@ -45,5 +45,12 @@ public interface HDeviceMapper {
 
     int getDeviceEnableNumByOrg(HDevice device);
 
+    // ---- GB28181 国标接入 ----
+    int upsertGbDevice(HDevice device);
+
+    HDevice selectByGbId(String gbId);
+
+    int updateStatusByApeId(@Param("apeId") String apeId, @Param("status") String status,
+                            @Param("isOnline") String isOnline);
 
 }

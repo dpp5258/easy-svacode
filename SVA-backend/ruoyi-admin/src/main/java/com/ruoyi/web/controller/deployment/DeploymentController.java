@@ -348,28 +348,6 @@ public class DeploymentController
         return buildActionResult(true, "停止", analyzerResult.getMessage(), analyzerResult.getDetailMessage(), latest);
     }
 
-    @PostMapping("/{id}/live-output")
-    public AjaxResult liveOutput(@PathVariable("id") String id)
-    {
-        DeploymentTask record = deploymentTaskService.selectDeploymentTaskById(id);
-        if (record == null)
-        {
-            return AjaxResult.error("布控任务不存在");
-        }
-
-        String algorithmStreamUrl =
-            deploymentAnalyzerClient.buildAlgorithmStreamUrl(record.getDeviceId(), id);
-        if (StringUtils.isEmpty(algorithmStreamUrl))
-        {
-            return AjaxResult.error("未绑定可用ZLM/SVA服务器或配置缺失，无法生成算法输出流地址");
-        }
-
-        Map<String, Object> data = new LinkedHashMap<>();
-        data.put("algorithmStreamUrl", algorithmStreamUrl);
-        data.put("algorithm_stream_url", algorithmStreamUrl);
-        return AjaxResult.success(data);
-    }
-
     @GetMapping("/{id}")
     public AjaxResult get(@PathVariable("id") String id)
     {
@@ -399,6 +377,28 @@ public class DeploymentController
             dataList.add(toDataMap(record));
         }
         return AjaxResult.success(dataList);
+    }
+
+    /**
+     * 查询布控的实时输出（算法流）地址，供前端"详情/实时画面"使用。
+     * 前端(views/deployment)会 POST /deployments/{id}/live-output 获取 algorithmStreamUrl；
+     * 未启用推流的布控不返回该字段，由前端回退到设备预览。
+     */
+    @PostMapping("/{id}/live-output")
+    public AjaxResult liveOutput(@PathVariable("id") String id,
+        @RequestBody(required = false) Map<String, Object> request)
+    {
+        DeploymentTask task = deploymentTaskService.selectDeploymentTaskById(id);
+        if (task == null)
+        {
+            return AjaxResult.error("布控任务不存在");
+        }
+        Map<String, Object> data = new LinkedHashMap<>();
+        if (StringUtils.isNotEmpty(task.getAlgorithmStreamUrl()))
+        {
+            data.put("algorithmStreamUrl", task.getAlgorithmStreamUrl());
+        }
+        return AjaxResult.success(data);
     }
 
     @GetMapping("/{id}/event-pool")
