@@ -1,4 +1,4 @@
-﻿#ifndef ANALYZER_SCHEDULER_H
+#ifndef ANALYZER_SCHEDULER_H
 #define ANALYZER_SCHEDULER_H
 #include <map>
 #include <mutex>
@@ -290,6 +290,7 @@ namespace SVAAnalyzer
 		 */
 		Algorithm *on_yolo11n_80 = nullptr;
 		Algorithm *on_yolo26n_80 = nullptr;
+		Algorithm *on_pose_sleep = nullptr; // yolo11n-pose (56ch keypoints) 睡岗引擎
 		void loop();
 
 		void setState(bool state);
