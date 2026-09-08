@@ -13,18 +13,55 @@
     </resultMap>
 
     <select id="selectEnabledById" resultMap="WvpServerResult">
-        SELECT
-            id,
-            name,
-            host,
-            api_port,
-            username,
-            password,
-            enabled
+        SELECT id, name, host, api_port, username, password, enabled
+        FROM wvp_server
+        WHERE id = #{id} AND enabled = 1
+        LIMIT 1
+    </select>
+
+    <select id="selectWvpServerList" parameterType="WvpServer" resultMap="WvpServerResult">
+        SELECT id, name, host, api_port, username, password, enabled
+        FROM wvp_server
+        <where>
+            <if test="name != null and name != ''">AND name like concat('%', #{name}, '%')</if>
+            <if test="host != null and host != ''">AND host like concat('%', #{host}, '%')</if>
+            <if test="enabled != null">AND enabled = #{enabled}</if>
+        </where>
+        ORDER BY id ASC
+    </select>
+
+    <select id="selectWvpServerById" resultMap="WvpServerResult">
+        SELECT id, name, host, api_port, username, password, enabled
         FROM wvp_server
         WHERE id = #{id}
-          AND enabled = 1
         LIMIT 1
+    </select>
+
+    <insert id="insertWvpServer" parameterType="WvpServer" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO wvp_server (name, host, api_port, username, password, enabled)
+        VALUES (#{name}, #{host}, #{api_port}, #{username}, #{password}, IFNULL(#{enabled}, 1))
+    </insert>
+
+    <update id="updateWvpServer" parameterType="WvpServer">
+        UPDATE wvp_server
+        <set>
+            <if test="name != null">name = #{name},</if>
+            <if test="host != null">host = #{host},</if>
+            <if test="api_port != null">api_port = #{api_port},</if>
+            <if test="username != null">username = #{username},</if>
+            <if test="password != null">password = #{password},</if>
+            <if test="enabled != null">enabled = #{enabled},</if>
+        </set>
+        WHERE id = #{id}
+    </update>
+
+    <delete id="deleteWvpServerById">
+        DELETE FROM wvp_server WHERE id = #{id}
+    </delete>
+
+    <select id="countByName" parameterType="WvpServer" resultType="int">
+        SELECT COUNT(*) FROM wvp_server WHERE name = #{name}
+        <if test="id != null">AND id != #{id}</if>
     </select>
 
 </mapper>

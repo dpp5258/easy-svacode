@@ -15,6 +15,7 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.util.UriComponentsBuilder;
 
@@ -122,7 +123,52 @@ public class WvpClient {
         }
     }
 
+    /** 云台控制（GB28181 方向/变焦）：WVP GET /api/front-end/ptz/{deviceId}/{channelId}。 */
+    public Map<String, Object> ptzControl(String deviceId, String channelId, String command,
+                                          Integer horizonSpeed, Integer verticalSpeed, Integer zoomSpeed) {
+        UriComponentsBuilder b = UriComponentsBuilder.fromUriString(baseUrl() + "/api/front-end/ptz/" + deviceId + "/" + channelId)
+            .queryParam("command", command);
+        if (horizonSpeed != null) b.queryParam("horizonSpeed", horizonSpeed);
+        if (verticalSpeed != null) b.queryParam("verticalSpeed", verticalSpeed);
+        if (zoomSpeed != null) b.queryParam("zoomSpeed", zoomSpeed);
+        JsonNode root = readJson(b.build(true).toUriString(), true);
+        Map<String, Object> m = new HashMap<>();
+        m.put("code", root.path("code").asInt(0));
+        return m;
+    }
+
+    /** 云台归位：WVP GET /api/device/control/home_position。 */
+    public Map<String, Object> ptzHome(String deviceId, String channelId) {
+        String url = UriComponentsBuilder.fromUriString(baseUrl() + "/api/device/control/home_position")
+            .queryParam("deviceId", deviceId)
+            .queryParam("channelId", channelId)
+            .build(true).toUriString();
+        JsonNode root = readJson(url, true);
+        Map<String, Object> m = new HashMap<>();
+        m.put("code", root.path("code").asInt(0));
+        return m;
+    }
+
+    /** 预置位调用/设置：WVP GET /api/v1/control/preset?serial=..&code=..&command=call|add&preset=..。 */
+    public Map<String, Object> ptzPreset(String deviceId, String channelId, Integer presetId, String command) {
+        String url = UriComponentsBuilder.fromUriString(baseUrl() + "/api/v1/control/preset")
+            .queryParam("serial", deviceId)
+            .queryParam("code", channelId)
+            .queryParam("command", command)
+            .queryParam("preset", presetId)
+            .build(true).toUriString();
+        JsonNode root = readJson(url, true);
+        Map<String, Object> m = new HashMap<>();
+        m.put("code", root.path("code").asInt(0));
+        return m;
+    }
+
     private JsonNode readJson(String url, boolean withAuth) {
+        return doGetJson(url, withAuth, true);
+    }
+
+    /** 带鉴权 GET；如遇 WVP token 过期(HTTP 401 或业务 code=401)自动重登一次再重试。 */
+    private JsonNode doGetJson(String url, boolean withAuth, boolean allowRetry) {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
         if (withAuth) {
@@ -141,7 +187,19 @@ public class WvpClient {
             if (StringUtils.isBlank(body)) {
                 throw new ServiceException("WVP接口返回空响应: " + url);
             }
-            return OBJECT_MAPPER.readTree(body);
+            JsonNode root = OBJECT_MAPPER.readTree(body);
+            // 业务层 401("请登录后重新请求") → 清 token 重登重试一次
+            if (withAuth && allowRetry && root.has("code") && root.path("code").asInt(0) == 401) {
+                this.accessToken = null;
+                return doGetJson(url, true, false);
+            }
+            return root;
+        } catch (HttpClientErrorException hce) {
+            if (withAuth && allowRetry && hce.getStatusCode().value() == 401) {
+                this.accessToken = null;
+                return doGetJson(url, true, false);
+            }
+            throw new ServiceException("调用WVP接口失败: " + url + " -> " + hce.getMessage());
         } catch (ServiceException e) {
             throw e;
         } catch (Exception e) {

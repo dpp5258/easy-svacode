@@ -16,6 +16,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -32,6 +33,9 @@ public class HDeviceController extends BaseController {
 
     @Autowired
     private HDeviceService hDeviceService;
+
+    @Autowired
+    private com.ruoyi.waring.service.impl.WvpClient wvpClient;
 
     @Resource
     private RedisTemplate<Object, Object> redisTemplate;
@@ -169,6 +173,74 @@ public class HDeviceController extends BaseController {
     @GetMapping("/monitor/{apeId}/preview")
     public AjaxResult previewMonitor(@PathVariable String apeId) {
         return success(hDeviceService.previewMonitor(apeId));
+    }
+
+    /** 手动触发从 WVP 同步国标设备。 */
+    @PostMapping("/gb/sync")
+    public AjaxResult syncGbDevices() {
+        try {
+            hDeviceService.syncGbDevicesOnce();
+            return success("国标设备同步完成");
+        } catch (Exception e) {
+            return error("国标设备同步失败: " + e.getMessage());
+        }
+    }
+
+    /** 云台控制（GB28181 方向/变焦）：转发 WVP /api/front-end/ptz。 */
+    @PostMapping("/ptz/{apeId}")
+    public AjaxResult ptz(@PathVariable String apeId,
+                          @RequestParam(required = false) String command,
+                          @RequestParam(required = false) Integer horizonSpeed,
+                          @RequestParam(required = false) Integer verticalSpeed,
+                          @RequestParam(required = false) Integer zoomSpeed) {
+        HDevice d = hDeviceService.selectDeviceByApeId(apeId);
+        if (d == null || StringUtils.isBlank(d.getGb_id()) || StringUtils.isBlank(d.getGb_channel_id())) {
+            return error("设备不存在或非国标设备");
+        }
+        try {
+            return success(wvpClient.ptzControl(d.getGb_id(), d.getGb_channel_id(), command,
+                horizonSpeed, verticalSpeed, zoomSpeed));
+        } catch (Exception e) {
+            return error("云台控制失败: " + e.getMessage());
+        }
+    }
+
+    /** 云台归位：转发 WVP /api/device/control/home_position。 */
+    @PostMapping("/ptz/{apeId}/home")
+    public AjaxResult ptzHome(@PathVariable String apeId) {
+        HDevice d = hDeviceService.selectDeviceByApeId(apeId);
+        if (d == null || StringUtils.isBlank(d.getGb_id()) || StringUtils.isBlank(d.getGb_channel_id())) {
+            return error("设备不存在或非国标设备");
+        }
+        try {
+            return success(wvpClient.ptzHome(d.getGb_id(), d.getGb_channel_id()));
+        } catch (Exception e) {
+            return error("云台归位失败: " + e.getMessage());
+        }
+    }
+
+    /** 预置位调用。 */
+    @PostMapping("/ptz/{apeId}/preset/{presetId}/call")
+    public AjaxResult ptzPresetCall(@PathVariable String apeId, @PathVariable Integer presetId) {
+        return doPtzPreset(apeId, presetId, "call");
+    }
+
+    /** 预置位设置。 */
+    @PostMapping("/ptz/{apeId}/preset/{presetId}/add")
+    public AjaxResult ptzPresetAdd(@PathVariable String apeId, @PathVariable Integer presetId) {
+        return doPtzPreset(apeId, presetId, "add");
+    }
+
+    private AjaxResult doPtzPreset(String apeId, Integer presetId, String cmd) {
+        HDevice d = hDeviceService.selectDeviceByApeId(apeId);
+        if (d == null || StringUtils.isBlank(d.getGb_id()) || StringUtils.isBlank(d.getGb_channel_id())) {
+            return error("设备不存在或非国标设备");
+        }
+        try {
+            return success(wvpClient.ptzPreset(d.getGb_id(), d.getGb_channel_id(), presetId, cmd));
+        } catch (Exception e) {
+            return error("预置位操作失败: " + e.getMessage());
+        }
     }
 
     private AjaxResult buildMonitorActionResult(boolean success, String action, String shortMessage, HDevice device) {

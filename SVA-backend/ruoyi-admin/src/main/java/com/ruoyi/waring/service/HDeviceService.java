@@ -31,4 +31,7 @@ public interface HDeviceService {
     int stopMonitor(String apeId);
 
     Map<String, Object> previewMonitor(String apeId);
+
+    /** 手动触发一次从 WVP 同步国标设备。 */
+    void syncGbDevicesOnce();
 }
