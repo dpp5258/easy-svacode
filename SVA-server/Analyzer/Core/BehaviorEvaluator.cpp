@@ -1,10 +1,12 @@
 #include "BehaviorEvaluator.h"
 
 #include "Algorithm.h"
+#include "Utils/Log.h"
 #include "Control.h"
 #include "Utils/GeometryUtils.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <functional>
 #include <limits>
@@ -305,6 +307,7 @@ namespace SVAAnalyzer
             double lastAnySec = 0.0;
             bool hasLastAny = false;
             double deskRun = 0.0;
+            double fbMs = 0.0; // 框级兜底累计时长(ms): pose 不可用且静止时累计; ok/平台门槛不过则清(见 feed)
             struct WinItem
             {
                 double t = 0.0;
@@ -331,6 +334,7 @@ namespace SVAAnalyzer
         };
         std::unordered_map<SleepPoseKey, SleepPoseState, SleepPoseKeyHash> gSleepPoseStates;
         std::mutex gSleepPoseMtx;
+        std::atomic<uint64_t> gSleepFbHits{0};
         int64_t gSleepLastPruneMs = 0; // R2: 定期清理超时状态
 
         void resetSleepPoseState(SleepPoseState &s)
@@ -343,8 +347,15 @@ namespace SVAAnalyzer
          * @return true = 本帧处于 ALARM (达标当帧即 true, 持续报警持续 true)
          */
         bool feedSleepPoseState(SleepPoseState &s, double tSec, float hd, bool ok,
-                                double thetaHd, double tSuspectSec)
+                                const PoseSleepParams &pp, double thetaHd, double tSuspectSec, int tier)
         {
+            // 规则参数覆盖默认常量(§6 全参数 JSON 化); 未配置时与旧硬编码等值, 行为不变
+            const double kSleepThetaDesk = pp.thetaDesk;
+            const double kSleepWindowSec = pp.windowSec;
+            const double kSleepRatioP = pp.ratioP;
+            const double kSleepGapTolSec = pp.gapTolSec;
+            const double kSleepGapSec = pp.gapSec;
+            const double kSleepTDeskSec = pp.deskSec;
             if (!s.hasLast)
             {
                 s.lastT = tSec;
@@ -516,8 +527,28 @@ namespace SVAAnalyzer
                 }
                 return true;
             }
+            // ---- [框级兜底 FB] (角色2自研, 对齐 Python deploy_chain, 算法规则.md §10):
+            //      pose 持续不可用(本帧 ok=false) 且 tier≥min 且状态 NORMAL 时, 累计静止时长;
+            //      达 boxFallbackMs → 触发(等价平台"框级 sleep: 静止+时长")。
+            //      注意: 移动帧走 isSleepHit 前置 speed/motion 门而不调本函数, fbMs 不累计;
+            //      断供 >GAP 会 resetSleepPoseState 一并清零 fbMs(与 Python "非平台门槛即清"近似)。
+            if (!ok && pp.boxFallbackMs > 0.0 && tier >= pp.boxFallbackTierMin && s.state == 0)
+            {
+                s.fbMs += dt * 1000.0;
+                if (s.fbMs >= pp.boxFallbackMs)
+                {
+                    s.fbMs = 0.0;
+                    gSleepFbHits.fetch_add(1, std::memory_order_relaxed);
+                    return true;
+                }
+            }
+            else if (ok || s.state != 0)
+            {
+                s.fbMs = 0.0;
+            }
             return false;
         }
+
 
         /**
          * @brief Check sleep hit.
@@ -582,7 +613,17 @@ namespace SVAAnalyzer
                 }
                 SleepPoseState &st = gSleepPoseStates[key];
                 st.lastFeedMs = nowMs;
-                if (feedSleepPoseState(st, tSec, detect.hd, detect.poseOk, thetaHd, tSuspectSec))
+                PoseSleepParams pp;
+                pp.thetaDesk   = rule.thetaDesk;
+                pp.windowSec   = rule.windowSec > 0.0 ? rule.windowSec : 4.0;
+                pp.ratioP      = rule.ratioP    > 0.0 ? rule.ratioP    : 0.5;
+                pp.gapTolSec   = rule.gapTolSec > 0.0 ? rule.gapTolSec : 0.5;
+                pp.gapSec      = rule.gapSec    > 0.0 ? rule.gapSec    : 1.5;
+                pp.deskSec     = rule.deskSec   > 0.0 ? rule.deskSec   : 1.5;
+                pp.boxFallbackMs      = rule.boxFallbackMs;
+                pp.boxFallbackTierMin = rule.boxFallbackTierMin > 0 ? rule.boxFallbackTierMin : 2;
+                const int poseTier = detect.poseTier > 0 ? detect.poseTier : 1;
+                if (feedSleepPoseState(st, tSec, detect.hd, detect.poseOk, pp, thetaHd, tSuspectSec, poseTier))
                 {
                     return true;
                 }
@@ -788,6 +829,11 @@ namespace SVAAnalyzer
      * The Scheduler (or Analyzer) calls this after temporal tracking has enriched the
      * DetectObject with trail, region states, speed, direction, etc.
      */
+    uint64_t sleepPoseFbHitCount()
+    {
+        return gSleepFbHits.load(std::memory_order_relaxed);
+    }
+
     BehaviorDecision evaluateAtomicBehavior(const Control &control, const DetectObject &detect)
     {
         BehaviorDecision decision;

@@ -46,4 +46,36 @@
         WHERE enabled = 1
         ORDER BY id ASC
     </select>
+
+    <select id="selectZlmServerById" resultMap="ZlmServerResult">
+        SELECT
+            id,
+            name,
+            app,
+            host,
+            api_port,
+            media_http_port,
+            media_rtsp_port,
+            secret,
+            enabled
+        FROM zlm_server
+        WHERE id = #{id}
+        LIMIT 1
+    </select>
+
+    <!-- 启动自愈等场景: 只更新传入的非空字段 -->
+    <update id="updateZlmServer" parameterType="ZlmServer">
+        UPDATE zlm_server
+        <set>
+            <if test="name != null and name != ''">name = #{name},</if>
+            <if test="app != null">app = #{app},</if>
+            <if test="host != null and host != ''">host = #{host},</if>
+            <if test="api_port != null">api_port = #{api_port},</if>
+            <if test="media_http_port != null">media_http_port = #{media_http_port},</if>
+            <if test="media_rtsp_port != null">media_rtsp_port = #{media_rtsp_port},</if>
+            <if test="secret != null and secret != ''">secret = #{secret},</if>
+            <if test="enabled != null">enabled = #{enabled},</if>
+        </set>
+        WHERE id = #{id}
+    </update>
 </mapper>

@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ruoyi.waring.mapper.WvpServerMapper">
+
+    <resultMap id="WvpServerResult" type="com.ruoyi.waring.domain.WvpServer">
+        <result property="id" column="id"/>
+        <result property="name" column="name"/>
+        <result property="host" column="host"/>
+        <result property="api_port" column="api_port"/>
+        <result property="username" column="username"/>
+        <result property="password" column="password"/>
+        <result property="enabled" column="enabled"/>
+        <result property="create_time" column="create_time"/>
+        <result property="update_time" column="update_time"/>
+    </resultMap>
+
+    <sql id="selectWvpServerVo">
+        SELECT
+            id,
+            name,
+            host,
+            api_port,
+            username,
+            password,
+            enabled,
+            create_time,
+            update_time
+        FROM wvp_server
+    </sql>
+
+    <select id="selectEnabledById" resultMap="WvpServerResult">
+        <include refid="selectWvpServerVo"/>
+        WHERE id = #{id}
+          AND enabled = 1
+        LIMIT 1
+    </select>
+
+    <select id="selectWvpServerList" parameterType="WvpServer" resultMap="WvpServerResult">
+        <include refid="selectWvpServerVo"/>
+        <where>
+            <if test="name != null and name != ''">
+                AND name like concat('%', #{name}, '%')
+            </if>
+            <if test="enabled != null">
+                AND enabled = #{enabled}
+            </if>
+        </where>
+        ORDER BY id
+    </select>
+
+    <select id="selectWvpServerById" parameterType="Long" resultMap="WvpServerResult">
+        <include refid="selectWvpServerVo"/>
+        WHERE id = #{id}
+    </select>
+
+    <insert id="insertWvpServer" parameterType="WvpServer" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO wvp_server
+        (name, host, api_port, username, password, enabled, create_time, update_time)
+        VALUES
+        (#{name}, #{host}, #{api_port}, #{username}, #{password},
+         IFNULL(#{enabled}, 1), now(), now())
+    </insert>
+
+    <update id="updateWvpServer" parameterType="WvpServer">
+        UPDATE wvp_server
+        <set>
+            <if test="name != null">name = #{name},</if>
+            <if test="host != null">host = #{host},</if>
+            <if test="api_port != null">api_port = #{api_port},</if>
+            <if test="username != null">username = #{username},</if>
+            <if test="password != null and password != ''">password = #{password},</if>
+            <if test="enabled != null">enabled = #{enabled},</if>
+            update_time = now()
+        </set>
+        WHERE id = #{id}
+    </update>
+
+    <delete id="deleteWvpServerById" parameterType="Long">
+        DELETE FROM wvp_server WHERE id = #{id}
+    </delete>
+
+</mapper>

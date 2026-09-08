@@ -685,6 +685,7 @@ export default {
       if (behaviorType === 'relation_near') return '目标接近';
       if (behaviorType === 'relation_apart') return '目标远离';
       if (behaviorType === 'relation_not_contains') return '目标未包含';
+      if (behaviorType === 'sleep') return '睡岗告警';
       return '---';
     },
 

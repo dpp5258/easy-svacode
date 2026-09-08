@@ -30,6 +30,8 @@ import java.util.List;
 import java.util.Map;
 import com.ruoyi.system.domain.DeploymentTaskAlgorithm;
 
+import org.springframework.beans.factory.annotation.Value;
+
 @Service
 public class DeploymentAnalyzerClient
 {
@@ -41,6 +43,13 @@ public class DeploymentAnalyzerClient
     private static final String DEFAULT_ZLM_APP = "live";
     private static final String DEFAULT_SVA_APP = "analyzer";
     private static final int DEFAULT_ALARM_INTERVAL_SEC = 180;
+
+    /**
+     * WVP 推流鉴权 key(user 表 push_key, 若 WVP user-settings.push-authority=false 可留空)。
+     * 用于 Analyzer 回推流 URL 拼 ?sign=md5(pushKey), 否则 ZLM on_publish hook 到 WVP 会 401。
+     */
+    @Value("${easySva.wvp.pushKey:3e80d1762a324d5b0ff636e0bd16f1e3}")
+    private String wvpPushKey;
 
     @Autowired
     private RestTemplate restTemplate;
@@ -72,6 +81,16 @@ public class DeploymentAnalyzerClient
 
         String apeId = task.getDeviceId();
         String streamUrl = buildStreamUrl(bindingConfig, apeId);
+        String streamApp = bindingConfig.zlmApp;
+        String streamName = apeId;
+        String streamCode = apeId;
+        HDevice gbDevice = hDeviceMapper.selectDeviceByApeId(apeId);
+        if (gbDevice != null && "GB28181".equalsIgnoreCase(gbDevice.getDevice_type()))
+        {
+            streamApp = "rtp";
+            streamName = gbDevice.getGb_id() + "_" + StringUtils.nvl(gbDevice.getGb_channel_id(), "");
+            streamCode = streamName;
+        }
 
         boolean pushStream = Boolean.TRUE.equals(task.getPushEnabled());
         boolean frontendOverlayEnabled = Boolean.TRUE.equals(task.getFrontendOverlayEnabled());
@@ -93,9 +112,9 @@ public class DeploymentAnalyzerClient
 
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("code", task.getDeploymentId());
-        payload.put("streamCode", apeId);
-        payload.put("streamApp", bindingConfig.zlmApp);
-        payload.put("streamName", apeId);
+        payload.put("streamCode", streamCode);
+        payload.put("streamApp", streamApp);
+        payload.put("streamName", streamName);
         payload.put("streamUrl", streamUrl);
         payload.put("pushStream", pushStream);
         if (pushStream)
@@ -488,6 +507,14 @@ public class DeploymentAnalyzerClient
         {
             return null;
         }
+        HDevice device = hDeviceMapper.selectDeviceByApeId(apeId);
+        if (device != null && "GB28181".equalsIgnoreCase(device.getDevice_type()))
+        {
+            // 国标流: rtsp://zlm:rtsp/rtp/{设备}_{通道}
+            String stream = device.getGb_id() + "_" + StringUtils.nvl(device.getGb_channel_id(), "");
+            return "rtsp://" + config.zlmHost + ":" + config.zlmMediaRtspPort + "/rtp/" + stream;
+        }
+        // 原逻辑: rtsp://zlm:rtsp/{app}/{apeId}
         return "rtsp://" + config.zlmHost + ":" + config.zlmMediaRtspPort + "/" + config.zlmApp + "/" + apeId;
     }
 
@@ -497,7 +524,35 @@ public class DeploymentAnalyzerClient
         {
             return null;
         }
-        return "rtsp://" + config.zlmHost + ":" + config.zlmMediaRtspPort + "/" + config.svaApp + "/" + deploymentId;
+        String url = "rtsp://" + config.zlmHost + ":" + config.zlmMediaRtspPort + "/" + config.svaApp + "/"
+            + deploymentId;
+        // WVP 对 analyzer 这类非国标回推流走 on_publish 推流鉴权: 需带 sign=md5(pushKey)
+        // (WVP UserServiceImpl.checkPushAuthority: callId 缺省时 raw=pushKey)
+        if (StringUtils.isNotBlank(wvpPushKey))
+        {
+            url = url + "?sign=" + md5Hex(wvpPushKey);
+        }
+        return url;
+    }
+
+    private static String md5Hex(String text)
+    {
+        try
+        {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("MD5");
+            byte[] digest = md.digest(text.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder(digest.length * 2);
+            for (byte b : digest)
+            {
+                sb.append(Character.forDigit((b >> 4) & 0xF, 16));
+                sb.append(Character.forDigit(b & 0xF, 16));
+            }
+            return sb.toString();
+        }
+        catch (Exception e)
+        {
+            return "";
+        }
     }
 
     private String buildAlgorithmStreamUrl(BindingConfig config, String deploymentId)

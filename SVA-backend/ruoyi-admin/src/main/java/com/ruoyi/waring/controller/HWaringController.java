@@ -938,9 +938,19 @@ public class HWaringController extends BaseController implements SvaDetectEventC
             return;
         }
 
-        String app = zlmServer.getApp() == null || zlmServer.getApp().trim().isEmpty()
-            ? DEFAULT_ZLM_APP
-            : zlmServer.getApp().trim();
+        // 国标(GB28181)设备: 实况流在 ZLM 的 app=rtp、stream={gb_id}_{gb_channel_id}
+        // (由 WVP rtp_push 生成), 不是 live/{deviceId}; 用错流名 ZLM 会回
+        // code=-500 "can not find the stream"。
+        boolean gbDevice = device != null && "GB28181".equalsIgnoreCase(device.getDevice_type())
+            && StringUtils.isNotBlank(device.getGb_id());
+        String app = gbDevice ? "rtp"
+            : (zlmServer.getApp() == null || zlmServer.getApp().trim().isEmpty()
+                ? DEFAULT_ZLM_APP
+                : zlmServer.getApp().trim());
+        if (gbDevice) {
+            String gbChannel = StringUtils.trimToNull(device.getGb_channel_id());
+            stream = gbChannel == null ? device.getGb_id().trim() : device.getGb_id().trim() + "_" + gbChannel;
+        }
         String recordFileName = buildZlmRecordFileName(waring);
         String storagePath = recordFileName;
         String accessPath = buildZlmAccessMediaPath(app, stream, recordFileName);

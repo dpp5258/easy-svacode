@@ -297,3 +297,99 @@ bool  poseOk = false;                   // 头部点+双肩可见且够格判定
 - **构建部署**：`mvn clean package -Dmaven.test.skip=true -o` → `cp ruoyi-admin/target/ruoyi-admin.jar /opt/SVA/backend/backend.jar`(旧包备份 `backend.jar.bak.liveoutput`) → 重启后端。
 - **验证(本机)**: ① 真实布控 → `code:200` 返回正确 `ws://10.122.207.41:9992/analyzer/controlL03AYjSpvdIR9m.live.flv`(双键); ② 不存在 ID → `布控任务不存在`; ③ 布控列表回归正常。
 - **回滚**：`cp /opt/SVA/backend/backend.jar.bak.liveoutput /opt/SVA/backend/backend.jar && 重启后端`。
+
+## 8. Phase B：睡岗规则高级参数可调化（前端，2026-09-06 实现/验证）
+
+### 8.1 目标
+把 Phase A C++ 已支持的 sleep 规则参数（ROI/三档/框级兜底/C1-C3 姿态参数）在布控前端编辑页暴露，保存后随 `geometryConfig.behaviorRules` 透传落库（后端本就对 behaviorRules 全量 deepCopy，无需后端/DB 改动）。
+
+### 8.2 文件改动（SVA-web，脏工作树未提交）
+- 新增 `src/views/deployment/sleepAdvancedParams.js`：16 个键的默认值/范围/说明（唯一事实源）+ roiEnabled 语义归一（-1/1=开, 0=关, 统一存 1/0）。
+- 新增 `src/views/deployment/SleepRuleAdvancedParams.vue`：睡觉规则卡片内"睡岗高级参数"面板。**v2（2026-09-06 布局修复）**：默认收起为一行（`▶ 睡岗高级参数（pose/ROI/兜底） · ROI 开 · 预算 2 · 兜底 5000ms`），点标题展开；展开用 `grid auto-fill minmax(170px,1fr)`，每个输入框 ≥170px 不再被挤压；说明文字在标签悬停 tooltip 上，不占高度；恢复默认仅在展开态显示。
+- 修改 `src/views/deployment/add.vue`：
+  - import 并注册子组件；
+  - `normalizeBehaviorRuleWithGeometry`（白名单重建点，原会丢弃未知键）对 sleep 规则合并 `normalizeSleepAdvancedParams(rule)` → 键不再丢失，缺失键自动补默认值；
+  - 新增 `normalizeSleepAdvancedParams / handleSleepAdvancedChange / handleSleepAdvancedReset` 三个方法；
+  - 普通规则卡与多阶段序列阶段两处 sleep 规则卡片尾部插入 `<sleep-rule-advanced-params>`。
+
+> **布局问题修复记录**：v1 单元格固定 25% 宽，正常 100% 视口下列宽 < `el-input-number` 最小宽(~130px)，输入框溢出被相邻单元格遮挡（只有缩放页面碰巧够宽才显示）；改为 v2 的 minmax 网格 + 默认收起后解决。
+
+### 8.3 落库 JSON 键（与 C++ Analyzer Control.h 解析键一一对应）
+```json
+{"behaviorType":"sleep","thresholdMs":8000,
+ "roiEnabled":1,"roiBudget":4,"roiPad":2.5,"roiMatchIoU":0.15,"roiRecheckMs":2500,
+ "tierHi":100,"tierLo":50,"roiMin":40,
+ "boxFallbackMs":8000,"boxFallbackTierMin":2,
+ "thetaDesk":0,"windowSec":4,"ratioP":0.5,"gapTolSec":0.5,"gapSec":1.5,"deskSec":1.5}
+```
+语义：`roiEnabled:0` 关本规则 ROI；`boxFallbackMs:0` 关框级兜底；其余数值 0=取 Analyzer 默认（除默认值本身）。
+
+### 8.4 手工改 DB 等效操作（不经前端，需重启布控生效）
+```sql
+-- 例: 关 ROI、兜底改 5s（直接编辑 geometry_config 中 sleep 规则 JSON）
+```
+
+### 8.5 验证状态
+代码已完成；vue-template-compiler 模板编译、script 语法检查、生产构建（`NODE_OPTIONS=--openssl-legacy-provider npm run build:prod`，webpack4 需 legacy openssl）全部通过，`/var/www/SVA-web/dist` 已更新。
+
+**已验证（2026-09-06）**：页面人工联调（新建布控 `测试1.2` = `control4p1sAVBlE9BjfS`，`on_yolo11n_pose`）：
+- ① 睡觉规则卡片出现"睡岗高级参数"面板（普通规则卡 + 多阶段序列均含）；开关 ROI 增强默认开启。
+- ② 保存后查库 `geometry_config.behaviorRules[0]` **16/16 键齐全**，改值正确落库：`roiBudget=2, boxFallbackMs=5000, ratioP=0.4`，其余为默认值；再次打开编辑回显一致（含"恢复默认"按钮）。
+- ②b（2026-09-06 v2 布局修复后复验）：收起单行概要正确、展开后 16 项数值在 100% 页面缩放下完整显示、无相互遮蔽；用户确认"数据正常"。
+- ③ **Analyzer 运行时验证（2026-09-06 已跑）**：ZLM+推流(ffmpeg 循环)+Analyzer(root `-f /opt/SVA/config.json`)+`POST …/control4p1sAVBlE9BjfS/start` 全链路启动成功（`add success`）；Analyzer 收到的控制请求 `behaviorRules[0]` **16 键全部原样到位**（`roiBudget=2/boxFallbackMs=5000/ratioP=0.4/roiEnabled=1/…`），无解析报错。
+  - **ROI 分支运行时生效证据**：`[roi] control=… attempt/ok/backoff` 周期日志按 `roiRecheckMs=2500` 节奏退避执行；真实场景远机位素材 `74b5045f` 上 ROI 放大**成功恢复姿态**：`attempt=14 ok=12`（近景素材全程 ok=0）。
+  - **告警未触发（素材条件所致，非参数问题）**：`从工作进入睡觉.mp4`（17.8s 循环）该目标整帧+ROI 姿态均不可恢复（ok=0）、`fbHits=0`；`74b5045f`（7s 循环）无持续睡岗姿态。曾临时把阈值 8000ms 跑 3 分钟仍无告警，**已恢复 15000**。属既有"fb/远小目标端到端告警素材缺口"。
+  - **平台侧记录**：切流瞬间（旧流断开→Analyzer 重连）Analyzer 段错误一次（exit 139，拉流层重连竞态），重启+重注册布控后稳定；未复现。
+  - **③b ROI 开/关对照矩阵（2026-09-06）**（素材=`从工作进入睡觉.mp4` 循环；推流已开 push_enabled=1）：
+    - ROI=1 首启：RUNNING ✅、算法流 http-flv 200 ✅、Analyzer 日志有 `[roi] attempt/backoff` ✅、停止正常；
+    - ROI=0 首启：RUNNING ✅、算法流 200 ✅、**全程无 `[roi]` 日志**（ROI 分支确实关闭）✅、停止正常；
+    - 两轮均无告警（同素材姿态不可恢复，见上）；
+    - **停→立即再启动 失败**（ROI 开/关都复现）：Analyzer `AvPushStream` 向 ZLM RTSP `ANNOUNCE 406 Not Acceptable` → 返回 `push stream connect error` → 前端"推送失败，请稍后再试"。**原因**：ZLM 上一控制(同一 `analyzer/{id}` 发布路径)会话未及时释放，新发布被拒。**绕法**：stop 后等 ≥6s 再 start（实测成功，算法流 200）。属平台推流重发布时序问题，与 ROI 参数无关。
+  - 收尾：`测试1.2` 已 STOP（阈值恢复 15000；此后用户手动编辑过该布控区域/阈值/报警间隔，按用户当前配置保留），roiEnabled 恢复 1。本轮结束服务按需保留/停止。
+
+## 9. 平台可演示素材与参数矩阵（2026-09-07 实测更新）
+
+### 9.1 能稳定出告警的组合（演示用，按推荐配置）
+- **素材：`真实睡觉/从工作进入睡觉.mp4`（正方向版，10fps/1280x2276，即 /tmp/fromwork_sleep_h264.mp4）**
+  布控规则：thresholdMs=**3000ms**、maxSpeedPxPerSec=**60**、ROI=开、报警间隔 60s、区域覆盖人位
+  → 干净重启后一轮即出 ✅（实测 w845 @ 2026-09-07 00:14:45；另 2000/roi0 出过 w838-840，测试1.1 @8000 出 w843）
+- **素材：`真实睡觉/42冲工作进入睡觉.mp4`（正方向版）**
+  需 thresholdMs=**1000ms**、ROI=关 才出（实测 w842）；@3000/ROI开 150s 不出 → 只能算"演示次选"
+
+### 9.2 实测不出告警的素材（勿用于演示）
+- 纯睡觉正片正方向 1/25/26/27、43：3000 内 150s 无告警（横版 27 的 w841 系方向错误导致的假象，不采用）
+- `从工作进入睡觉` @8000：130s 无（临界，w843 属运气）；纯睡觉/趴睡"姿态关键点缺失"问题见 §10
+
+### 9.3 非告警类可演示项
+- ROI 放大功能演示：`真实场景/74b5045f…`（远机位）→ Analyzer 日志 `[roi] attempt=… ok>0`（attempt=14 ok=12）
+
+## 10. S1 摸底与 θ_hd 扫描结论（2026-09-07 · 角色2 实测）
+
+背景：`老吕资料/测试/检测样本07/09/10`、`真实睡觉` 的 1/15/21/23/24/25/26/27/42 等"趴着睡"素材平台不告警。按讨论做两条线实测：S1（打通框级兜底 FB：tier1 参与 + 修"未解救目标提前丢弃"）+ θ_hd 扫描 0.12→0.30。
+
+### 10.1 代码核查结论（S1 前提不成立）
+- `TemporalContext.cpp`（TemporalProcessor）按 IoU 贪心匹配维护 track，**无按 pose 丢弃目标的逻辑**：pose 缺失目标只要连续检出就持续进入 isSleepHit/feedSleepPoseState。"未解救目标被提前丢弃"假设代码上不成立。
+- FB 兜底位于 feedSleepPoseState（tier≥boxFallbackTierMin 且静止且 NORMAL 累计 fbMs≥boxFallbackMs）；tier1 被默认 tierMin=2 排除。S1 的代码侧改动仅"允许 tier1"，即规则 `boxFallbackTierMin=1`（纯配置，无需重编）。
+
+### 10.2 素材信号实测（Python 链，θ0.12/T3s/still=40 平台等效口径）
+- 检测样本07/09/10、25/26/27/1/42 的 poseOk 高达 **68~100%**（头肩点可见），不是"趴着就关键点缺失"；
+- 这批素材 hd 中位 **0.13~0.25**（伏案低头但未压到 0.12 深度）；与"认真工作/干扰"负样本 hd 分布（0.13~0.25）**完全重叠** → 纯放宽 θ 必误报工作；
+- 能报的 14/19/43/从工作：头压到 hd≤0.12 甚至 ≤0（头低于肩线，C3 趴桌档），与工作分布可分。
+
+### 10.3 平台 A/B 实测（测试1.2 演示档：thresholdMs=3000、maxSpeed=60、ROI开、间隔60s，素材全部正方向烘焙）
+| θ_hd | 从工作进入睡觉 | 1/15/21/25/26/27 | 认真工作7(负) |
+|---|---|---|---|
+| 0.12（默认） | ✅（w845，历史） | ❌ | ❌ |
+| 0.14 | ✅（w847 @06:48） | ❌ 逐段 150s 全无 | ❌ 180s 无 |
+
+结论：**θ=0.14 平台零收益、零副作用**；离线扫描"0.14 补报 1/15/21/26"是 Python 重放口径（still 门/选帧）造成的假象，平台未兑现。**维持 θ_hd=0.12 默认**（DB 规则已移除 hdThreshold 键，等同默认；本次 0.14→0.12 已回滚）。
+
+### 10.4 判据能力边界（勿夸大）
+"伏案低头但头未压到 θ0.12 深度"的睡姿与正常低头工作，在"静止+低头角度"判据体系下**不可分**；现有素材中该族（1/15/21/23/24/25/26/27/42）平台报不出，**非 θ 或 FB 兜底可解**。覆盖需：① 真·脸完全不可见趴睡素材（用于验证 FB tier1，注意其本身有"背对静止"误报面，见 33人员离开 案例）；② 新信号（头/颈微动、闭眼、区域长期不动+工位上下文）另立项。FB tier1 默认不宜开（负样本 `33人员离开` fb_t1@6.7s 误报实测）。
+
+### 10.5 本次运行故障与运维注意（角色3 收编）
+1. **rotation 元数据**：1920x1080/3840x2160 竖拍源带 `rotation=-90`，`-c copy` 推流丢弃旋转 → 平台见横置人像 → 横躺宽高比误报（w841/w846 假告警，已删告警行+录像）。推流前必须烘焙正方向（ffmpeg 自动旋转重编码，如 `-vf fps=10,scale=1280:-2`）。
+2. **Analyzer 断流重连卡死**：告警录像 broken-pipe（av_interleaved_write_frame ret=-32）后连续断流重连曾致日志冻结 + ~180% CPU 空转 14 分钟 → 处置：kill 后重启 Analyzer（必要时 `sudo pkill -x Analyzer`）。
+3. 布控 start 须**先推流、等 ZLM 注册、再 start**；换素材 stop 推流后等 ≥15s，降低把 worker 打挂概率。
+4. CPU 实测：Analyzer 分析期 ~180%（约1.8核）、空闲 ~2%；java ~5%、ZLM ~2%、ffmpeg <1%；整机 load 分析期 ~2.5。
+

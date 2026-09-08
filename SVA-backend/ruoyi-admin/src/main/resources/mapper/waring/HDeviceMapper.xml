@@ -26,6 +26,15 @@
         <result property="monitor_status" column="monitor_status"/>
         <result property="create_time" column="create_time"/>
         <result property="update_time" column="update_time"/>
+        <result property="device_type" column="device_type"/>
+        <result property="gb_id" column="gb_id"/>
+        <result property="gb_channel_id" column="gb_channel_id"/>
+        <result property="gb_domain" column="gb_domain"/>
+        <result property="gb_password" column="gb_password"/>
+        <result property="channel_count" column="channel_count"/>
+        <result property="status" column="status"/>
+        <result property="sip_server" column="sip_server"/>
+        <result property="wvp_server_id" column="wvp_server_id"/>
     </resultMap>
 
     <sql id="selectDeviceVo">
@@ -52,16 +61,25 @@
             sva_server_id,
             monitor_status,
             create_time,
-            update_time
+            update_time,
+            device_type,
+            gb_id,
+            gb_channel_id,
+            gb_domain,
+            gb_password,
+            channel_count,
+            status,
+            sip_server,
+            wvp_server_id
         FROM
             h_device
     </sql>
 
     <insert id="insertDevice">
         INSERT INTO h_device
-        (ape_id, name, stream_source_type, direct_source_url, play_url, zlm_proxy_key, resource_type, sub_type, ip_addr, port, org_index, org_name, place_code, place, is_online, producer, producer_name, parent_code, zlm_server_id, sva_server_id, monitor_status, create_time, update_time)
+        (ape_id, name, stream_source_type, direct_source_url, play_url, zlm_proxy_key, resource_type, sub_type, ip_addr, port, org_index, org_name, place_code, place, is_online, producer, producer_name, parent_code, zlm_server_id, sva_server_id, monitor_status, create_time, update_time, device_type, gb_id, gb_channel_id, gb_domain, gb_password, channel_count, status, sip_server)
         VALUES
-            (#{ape_id}, #{name}, IFNULL(UPPER(#{stream_source_type}), 'DIRECT'), #{direct_source_url}, #{play_url}, #{zlm_proxy_key}, #{resource_type}, #{sub_type}, #{ip_addr}, #{port}, #{org_index}, #{org_name}, #{place_code}, #{place}, #{is_online}, #{producer}, #{producer_name}, #{parent_code}, IFNULL(#{zlm_server_id}, 1), IFNULL(#{sva_server_id}, 1), IFNULL(#{monitor_status}, 'STOPPED'), #{create_time}, #{update_time})
+            (#{ape_id}, #{name}, IFNULL(UPPER(#{stream_source_type}), 'DIRECT'), #{direct_source_url}, #{play_url}, #{zlm_proxy_key}, #{resource_type}, #{sub_type}, #{ip_addr}, #{port}, #{org_index}, #{org_name}, #{place_code}, #{place}, #{is_online}, #{producer}, #{producer_name}, #{parent_code}, IFNULL(#{zlm_server_id}, 1), IFNULL(#{sva_server_id}, 1), IFNULL(#{monitor_status}, 'STOPPED'), #{create_time}, #{update_time}, #{device_type}, #{gb_id}, #{gb_channel_id}, #{gb_domain}, #{gb_password}, IFNULL(#{channel_count}, 0), #{status}, #{sip_server})
     </insert>
 
     <delete id="deleteDevice">
@@ -75,9 +93,9 @@
 
     <insert id="insertDeviceCrud" parameterType="HDevice">
         INSERT INTO h_device
-        (ape_id, name, stream_source_type, direct_source_url, play_url, zlm_proxy_key, resource_type, sub_type, ip_addr, port, org_index, org_name, place_code, place, is_online, producer, producer_name, parent_code, zlm_server_id, sva_server_id, monitor_status, create_time, update_time)
+        (ape_id, name, stream_source_type, direct_source_url, play_url, zlm_proxy_key, resource_type, sub_type, ip_addr, port, org_index, org_name, place_code, place, is_online, producer, producer_name, parent_code, zlm_server_id, sva_server_id, monitor_status, create_time, update_time, device_type, gb_id, gb_channel_id, gb_domain, gb_password, channel_count, status, sip_server)
         VALUES
-            (#{ape_id}, #{name}, IFNULL(UPPER(#{stream_source_type}), 'DIRECT'), #{direct_source_url}, #{play_url}, #{zlm_proxy_key}, #{resource_type}, #{sub_type}, #{ip_addr}, #{port}, #{org_index}, #{org_name}, #{place_code}, #{place}, #{is_online}, #{producer}, #{producer_name}, #{parent_code}, IFNULL(#{zlm_server_id}, 1), IFNULL(#{sva_server_id}, 1), IFNULL(#{monitor_status}, 'STOPPED'), #{create_time}, #{update_time})
+            (#{ape_id}, #{name}, IFNULL(UPPER(#{stream_source_type}), 'DIRECT'), #{direct_source_url}, #{play_url}, #{zlm_proxy_key}, #{resource_type}, #{sub_type}, #{ip_addr}, #{port}, #{org_index}, #{org_name}, #{place_code}, #{place}, #{is_online}, #{producer}, #{producer_name}, #{parent_code}, IFNULL(#{zlm_server_id}, 1), IFNULL(#{sva_server_id}, 1), IFNULL(#{monitor_status}, 'STOPPED'), #{create_time}, #{update_time}, #{device_type}, #{gb_id}, #{gb_channel_id}, #{gb_domain}, #{gb_password}, IFNULL(#{channel_count}, 0), #{status}, #{sip_server})
     </insert>
 
     <update id="updateDevice" parameterType="HDevice">
@@ -103,9 +121,26 @@
             <if test="zlm_server_id != null">zlm_server_id = #{zlm_server_id},</if>
             <if test="sva_server_id != null">sva_server_id = #{sva_server_id},</if>
             <if test="monitor_status != null and monitor_status != ''">monitor_status = #{monitor_status},</if>
+            <if test="device_type != null">device_type = #{device_type},</if>
+            <if test="gb_id != null">gb_id = #{gb_id},</if>
+            <if test="gb_channel_id != null">gb_channel_id = #{gb_channel_id},</if>
+            <if test="gb_domain != null">gb_domain = #{gb_domain},</if>
+            <if test="gb_password != null">gb_password = #{gb_password},</if>
+            <if test="channel_count != null">channel_count = #{channel_count},</if>
+            <if test="status != null">status = #{status},</if>
+            <if test="sip_server != null">sip_server = #{sip_server},</if>
+            <if test="wvp_server_id != null">wvp_server_id = #{wvp_server_id},</if>
             <if test="update_time != null">update_time = #{update_time},</if>
         </set>
         WHERE ape_id = #{ape_id}
+    </update>
+
+    <!-- 平台设置"设为全部国标设备平台": 把某 WVP 平台一键绑定到所有国标设备行
+         (device_type='GB28181' 或已带 gb_id 的行; 普通 RTSP 设备不受影响) -->
+    <update id="updateWvpServerIdForAllGb">
+        UPDATE h_device
+        SET wvp_server_id = #{wvpServerId}, update_time = now()
+        WHERE (device_type = 'GB28181' OR (gb_id IS NOT NULL AND gb_id &lt;&gt; ''))
     </update>
 
     <update id="updateMonitorStateByApeId">
@@ -159,6 +194,9 @@
             </if>
             <if test="monitor_status != null and monitor_status != ''">
                 AND monitor_status = #{monitor_status}
+            </if>
+            <if test="device_type != null and device_type != ''">
+                AND device_type = #{device_type}
             </if>
         </where>
     </select>
@@ -217,4 +255,38 @@
                 AND is_online != 1
         </where>
     </select>
+
+    <!-- GB28181 国标设备 upsert（以 gb_id 作为幂等键，ape_id 同 gb_id） -->
+    <insert id="upsertGbDevice" parameterType="HDevice">
+        INSERT INTO h_device
+        (ape_id, name, device_type, gb_id, gb_channel_id, gb_domain, gb_password, channel_count, status,
+         sip_server, stream_source_type, is_online, zlm_server_id, sva_server_id, monitor_status, create_time, update_time)
+        VALUES
+        (#{ape_id}, #{name}, 'GB28181', #{gb_id}, #{gb_channel_id}, #{gb_domain}, #{gb_password}, IFNULL(#{channel_count}, 0),
+         #{status}, #{sip_server}, 'PLATFORM', #{is_online}, IFNULL(#{zlm_server_id}, 1), IFNULL(#{sva_server_id}, 1),
+         IFNULL(#{monitor_status}, 'STOPPED'), #{create_time}, #{update_time})
+        ON DUPLICATE KEY UPDATE
+            name = VALUES(name),
+            gb_channel_id = VALUES(gb_channel_id),
+            gb_domain = VALUES(gb_domain),
+            channel_count = VALUES(channel_count),
+            status = VALUES(status),
+            is_online = VALUES(is_online),
+            update_time = VALUES(update_time)
+    </insert>
+
+    <select id="selectByGbId" resultMap="HDeviceResult">
+        <include refid="selectDeviceVo"/>
+        WHERE gb_id = #{gbId}
+        LIMIT 1
+    </select>
+
+    <update id="updateStatusByApeId">
+        UPDATE h_device
+        <set>
+            <if test="status != null and status != ''">status = #{status},</if>
+            <if test="isOnline != null and isOnline != ''">is_online = #{isOnline},</if>
+        </set>
+        WHERE ape_id = #{apeId}
+    </update>
 </mapper>

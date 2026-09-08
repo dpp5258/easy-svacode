@@ -139,6 +139,14 @@ springdoc:
       paths-to-match: '/**'
       packages-to-scan: com.ruoyi.web.controller.tool
 
+# easySVA 扩展配置
+easySva:
+  # WVP 推流鉴权 key(= wvp 库 user 表 push_key)。
+  # Analyzer 回推流(rtsp://zlm/analyzer/xxx) 会被 WVP on_publish 鉴权拦截,
+  # 需要 URL 带 ?sign=md5(pushKey); 若 WVP user-settings.push-authority=false 可留空。
+  wvp:
+    pushKey: 3e80d1762a324d5b0ff636e0bd16f1e3
+
 # 防盗链配置
 referer:
   # 防盗链开关

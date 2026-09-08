@@ -616,6 +616,13 @@
                           {{ getBehaviorRuleSummary(rule) }}
                         </div>
                       </el-col>
+                      <el-col v-if="rule.behaviorType === 'sleep'" :span="24">
+                        <sleep-rule-advanced-params
+                          :rule="rule"
+                          @change="handleSleepAdvancedChange"
+                          @reset="handleSleepAdvancedReset"
+                        />
+                      </el-col>
                     </el-row>
                   </div>
                 </div>
@@ -994,6 +1001,13 @@
                             {{ getBehaviorRuleSummary(rule) }}
                           </div>
                         </el-col>
+                        <el-col v-if="rule.behaviorType === 'sleep'" :span="24">
+                          <sleep-rule-advanced-params
+                            :rule="rule"
+                            @change="handleSleepAdvancedChange"
+                            @reset="handleSleepAdvancedReset"
+                          />
+                        </el-col>
                       </el-row>
                     </div>
                   </div>
@@ -1078,9 +1092,14 @@ import { getDeviceList, previewDeviceMonitor } from '@/api/device'
 import { getAlgorithmList, getAlgorithmTargets } from '@/api/algorithm'
 import { createDeployment, getDeploymentDetail, updateDeployment, updateDeploymentLiveOutput } from '@/api/deployment'
 import { OVERLAY_DELAY_DEFAULT_MS, loadOverlayDelayMs } from '@/utils/systemRuntimeConfig'
+import SleepRuleAdvancedParams from './SleepRuleAdvancedParams.vue'
+import { SLEEP_ADVANCED_PARAMS } from './sleepAdvancedParams'
 
 export default {
   name: 'DeploymentAdd',
+  components: {
+    SleepRuleAdvancedParams
+  },
   data() {
     const validateAlgorithmTasks = (rule, value, callback) => {
       if (!Array.isArray(value) || value.length === 0) {
@@ -2264,6 +2283,55 @@ export default {
       return Math.max(1, Math.min(10000, nextValue))
     },
 
+    normalizeSleepAdvancedParams(rule) {
+      const result = {}
+      Object.keys(SLEEP_ADVANCED_PARAMS).forEach(key => {
+        const spec = SLEEP_ADVANCED_PARAMS[key]
+        const raw = rule ? rule[key] : undefined
+        if (key === 'roiEnabled') {
+          result[key] = Number(raw) === 0 ? 0 : 1
+          return
+        }
+        let numericValue = Number(raw)
+        if (!Number.isFinite(numericValue)) {
+          numericValue = spec.default
+        }
+        if (spec.integer) {
+          numericValue = Math.round(numericValue)
+        } else if (typeof spec.precision === 'number') {
+          numericValue = Number(numericValue.toFixed(spec.precision))
+        }
+        if (typeof spec.min === 'number') {
+          numericValue = Math.max(spec.min, numericValue)
+        }
+        if (typeof spec.max === 'number') {
+          numericValue = Math.min(spec.max, numericValue)
+        }
+        result[key] = numericValue
+      })
+      return result
+    },
+
+    handleSleepAdvancedChange(ruleId, key, value) {
+      if (!ruleId || !key) {
+        return
+      }
+      this.updateBehaviorRule(ruleId, rule => ({
+        ...rule,
+        [key]: value
+      }))
+    },
+
+    handleSleepAdvancedReset(ruleId) {
+      if (!ruleId) {
+        return
+      }
+      this.updateBehaviorRule(ruleId, rule => ({
+        ...rule,
+        ...this.normalizeSleepAdvancedParams(null)
+      }))
+    },
+
     getRegionOptionsFromGeometry(geometryConfig) {
       return (geometryConfig.regions || []).map((region, index) => ({
         value: region.id,
@@ -2345,7 +2413,8 @@ export default {
         directionLineId,
         ruleObjectCode: specifiedRegionMode ? 'specified_region' : ruleObjectCode,
         subjectObject: specifiedRegionMode ? '' : subjectObject,
-        targetObject: specifiedRegionMode ? '' : targetObject
+        targetObject: specifiedRegionMode ? '' : targetObject,
+        ...(behaviorType === 'sleep' ? this.normalizeSleepAdvancedParams(rule) : {})
       }
     },
 

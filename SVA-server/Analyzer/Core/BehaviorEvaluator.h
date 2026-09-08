@@ -9,6 +9,25 @@ namespace SVAAnalyzer
     struct DetectObject;
 
     /**
+     * @brief 睡岗 pose 状态机可调参数(算法规则.md §6/§10; 规则 JSON 缺省时用内置默认, 向后兼容)。
+     *        参数化替换 BehaviorEvaluator.cpp 原硬编码常量, 行为不变当值等于默认。
+     */
+    struct PoseSleepParams
+    {
+        double thetaDesk = 0.0;        // C3 趴桌阈值(hd≤θ_desk), 缺省 0.0
+        double windowSec = 4.0;        // C2 滑动窗口 W
+        double ratioP = 0.5;           // C2 最低占比 p
+        double gapTolSec = 0.5;        // C1 段内间隙容忍 gap_tol(呼吸式续计)
+        double gapSec = 1.5;           // 断供/恢复 GAP
+        double deskSec = 1.5;          // C3 趴桌持续时长 T_desk
+        double boxFallbackMs = 8000.0; // 框级兜底时长(静止+pose 持续不可用), 0=关
+        int boxFallbackTierMin = 2;    // 兜底最低档位(默认 tier≥2 才兜底, tier1 防"坐直写字")
+    };
+
+    /** 累计"框级兜底"命中次数(调试/审计; ROI 迁移测试 T3 用) */
+    uint64_t sleepPoseFbHitCount();
+
+    /**
      * @brief 单个行为规则评估的结果
      * 
      * 每个 DetectObject 在每帧被评估时，返回第一个匹配的行为规则结果。

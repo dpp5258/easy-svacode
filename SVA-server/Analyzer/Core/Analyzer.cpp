@@ -1,4 +1,5 @@
 #include "Analyzer.h"
+#include "AlgorithmOnYolo.h"
 #include "Algorithm.h"
 #include <json/json.h>
 #include "Scheduler.h"
@@ -253,6 +254,130 @@ namespace SVAAnalyzer
             if (detect.source_algorithm != algorithmCode)
             {
                 detect.source_algorithm = algorithmCode;
+            }
+        }
+
+
+        // ---- [ROI 放大 + 三档自适应] (角色2自研, 算法规则.md §8.5/§10, ROI迁移方案_optSVA.md Phase A) ----
+        // 说明: 在此(整帧推理后、追踪前)做打标与 ROI 补推, image+engine+detects 齐备且已有锁串行;
+        //       退避键用量化框位置(追踪在 Worker 才打 trackId)。移动中也可能尝试 ROI, 靠退避限频,
+        //       移动目标不参与 pose 累计故无假报风险(与文档 §6 记录一致)。
+        if (!taskDetects.empty() &&
+            (algorithmCode == "on_yolo11n_pose" || algorithmCode == "on_pose_sleep"))
+        {
+            const float scaleFull = 640.0f / static_cast<float>(std::max(image.rows, image.cols));
+            // 从规则取参数(缺省=默认): 只取第一条 enabled sleep 规则
+            bool roiOn = false;
+            int budget = 4;
+            double pad = 2.5;
+            double matchIoU = 0.15;
+            double recheckMs = 2500.0;
+            double hi = 100.0;
+            double lo = 50.0;
+            double rmin = 40.0;
+            for (size_t ri = 0; ri < mControl->behaviorRules.size(); ++ri)
+            {
+                const BehaviorRuleConfig &r = mControl->behaviorRules[ri];
+                if (!r.enabled || r.behaviorType != "sleep")
+                {
+                    continue;
+                }
+                roiOn = (r.roiEnabled != 0); // -1/1=开(默认), 0=关
+                if (r.roiBudget > 0) budget = r.roiBudget;
+                if (r.roiPad > 0.0) pad = r.roiPad;
+                if (r.roiMatchIoU > 0.0) matchIoU = r.roiMatchIoU;
+                if (r.roiRecheckMs > 0.0) recheckMs = r.roiRecheckMs;
+                if (r.tierHiPx > 0.0) hi = r.tierHiPx;
+                if (r.tierLoPx > 0.0) lo = r.tierLoPx;
+                if (r.roiMinPx > 0.0) rmin = r.roiMinPx;
+                break;
+            }
+            // 打标: 640 空间人框高 + 三档
+            for (size_t di = 0; di < taskDetects.size(); ++di)
+            {
+                DetectObject &det = taskDetects[di];
+                const float h640 = static_cast<float>(det.y2 - det.y1) * scaleFull;
+                det.boxH640 = h640;
+                det.poseTier = (h640 >= static_cast<float>(hi)) ? 1 : ((h640 >= static_cast<float>(lo)) ? 2 : 3);
+            }
+            if (roiOn)
+            {
+                AlgorithmOnYolo *poseAlg = dynamic_cast<AlgorithmOnYolo *>(algorithm);
+                if (poseAlg)
+                {
+                    const int64_t nowMs = getCurTime();
+                    int roiBudgetLeft = budget;
+                    std::lock_guard<std::mutex> roiLock(mScheduler->mAlgorithmMtx); // ROI 二次推理与整帧推理互斥
+                    for (size_t di = 0; di < taskDetects.size() && roiBudgetLeft > 0; ++di)
+                    {
+                        DetectObject &det = taskDetects[di];
+                        if (det.poseTier < 2 || det.poseOk)
+                        {
+                            continue;
+                        }
+                        if (det.boxH640 < static_cast<float>(rmin) || det.boxH640 >= static_cast<float>(hi))
+                        {
+                            continue;
+                        }
+                        RoiBackoffKey key;
+                        key.qx = ((det.x1 + det.x2) / 2) / 16;
+                        key.qy = ((det.y1 + det.y2) / 2) / 16;
+                        key.qh = (det.y2 - det.y1) / 16;
+                        auto it = mRoiBackoff.find(key);
+                        bool attempt = true;
+                        if (it != mRoiBackoff.end())
+                        {
+                            attempt = (it->second.fail < 3) ||
+                                      (nowMs - it->second.lastMs) >= static_cast<int64_t>(recheckMs);
+                        }
+                        if (!attempt)
+                        {
+                            continue;
+                        }
+                        --roiBudgetLeft;
+                        ++mRoiAttempt;
+                        if (it == mRoiBackoff.end())
+                        {
+                            it = mRoiBackoff.emplace(key, RoiBackoff()).first;
+                        }
+                        if (poseAlg->roiUpgradePose(image, det, static_cast<float>(pad), static_cast<float>(matchIoU)))
+                        {
+                            it->second.fail = 0;
+                            ++mRoiOk;
+                        }
+                        else
+                        {
+                            ++it->second.fail;
+                            it->second.lastMs = nowMs;
+                        }
+                    }
+                    // 30s 清理一次过时退避键(按 lastMs)
+                    if (mRoiLogMs == 0 || (nowMs - mRoiLogMs) >= 30000)
+                    {
+                        for (auto b = mRoiBackoff.begin(); b != mRoiBackoff.end();)
+                        {
+                            if (b->second.lastMs != 0 && (nowMs - b->second.lastMs) >= 30000)
+                            {
+                                b = mRoiBackoff.erase(b);
+                            }
+                            else
+                            {
+                                ++b;
+                            }
+                        }
+                    }
+                    // 周期日志: ROI/兜底计数(测试 T2/T3 观察用)
+                    if (mRoiAttempt > 0 && (nowMs - mRoiLogMs) >= 5000)
+                    {
+                        mRoiLogMs = nowMs;
+                        LOGI("[roi] control=%s attempt=%llu ok=%llu fbHits=%llu backoff=%zu",
+                             mControl->code.c_str(),
+                             static_cast<unsigned long long>(mRoiAttempt),
+                             static_cast<unsigned long long>(mRoiOk),
+                             static_cast<unsigned long long>(sleepPoseFbHitCount()),
+                             mRoiBackoff.size());
+                    }
+                }
             }
         }
 

@@ -59,6 +59,11 @@ namespace SVAAnalyzer
         float hd = 0.0f;                      // head-down ratio: (shoulderMidY - headTopY)/boxH; 低头→小/负
         bool poseOk = false;                  // head + both shoulders visible enough for pose judgement
 
+        // ---- 部署链增强(算法规则.md §8.5/§10, 角色2自研): ROI 放大 + 三档自适应 ----
+        float boxH640 = 0.0f;                 // 640 空间人框高(整帧 letterbox scale 换算), 打标用
+        int poseTier = 1;                     // 1/2/3: ≥100px→1, ≥50→2, <50→3(640 空间)
+        bool poseFromRoi = false;             // 本帧 hd/poseOk 是否来自 ROI 放大(审计/调试)
+
         // Temporal tracking (from TemporalProcessor)
         int trackId = -1;
         int64_t firstSeenTimestampMs = 0;

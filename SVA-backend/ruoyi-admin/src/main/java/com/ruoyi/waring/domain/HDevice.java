@@ -39,4 +39,14 @@ public class HDevice extends BaseEntity {
     private String monitor_status;
     private String create_time;
     private String update_time;
+    // GB28181 国标接入新增字段（只增不改）
+    private String device_type;      // RTSP / GB28181
+    private String gb_id;            // 国标设备ID(20位)
+    private String gb_channel_id;    // 国标通道ID(摄像机)
+    private String gb_domain;        // 国标SIP域
+    private String gb_password;      // 国标SIP摘要密码(存库,不返前端)
+    private Integer channel_count;   // 通道数
+    private String status;           // ONLINE / OFFLINE
+    private String sip_server;       // 所属SIP平台(WVP)标识
+    private Long wvp_server_id;      // 归属WVP平台(wvp_server.id)；NULL=未绑定回落默认平台1
 }

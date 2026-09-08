@@ -635,4 +635,114 @@ namespace SVAAnalyzer
         return mEngine->runInference(image, detects);
     }
 
+
+    bool OnnxRuntimeEngine::runPoseRoi(cv::Mat &fullImage, const DetectObject &target,
+                                       float pad, float matchIoU, DetectObject &out)
+    {
+        if (mDecoder != YoloOutputDecoder::Pose || mInputWidth <= 0 || mInputHeight <= 0)
+        {
+            return false;
+        }
+        const int W = fullImage.cols;
+        const int H = fullImage.rows;
+        if (W <= 0 || H <= 0)
+        {
+            return false;
+        }
+        const int bw = std::max(1, target.x2 - target.x1);
+        const int bh = std::max(1, target.y2 - target.y1);
+        int side = static_cast<int>(std::lround(pad * static_cast<float>(std::max(bw, bh))));
+        side = std::max(32, std::min(side, std::min(W, H)));
+        const int cx = (target.x1 + target.x2) / 2;
+        const int cy = (target.y1 + target.y2) / 2;
+        const int xa = std::max(0, std::min(cx - side / 2, W - side));
+        const int ya = std::max(0, std::min(cy - side / 2, H - side));
+        if (side <= 0)
+        {
+            return false;
+        }
+        cv::Mat roi = fullImage(cv::Rect(xa, ya, side, side));
+
+        // 与 runInference 的 Pose 分支同款预处理: 裁窗等比缩放铺满 640(方形无 pad, RGB)
+        cv::Mat resized;
+        cv::resize(roi, resized, cv::Size(mInputWidth, mInputHeight), 0.0, 0.0, cv::INTER_LINEAR);
+        cv::Mat inputImage = resized.clone();
+        cv::Mat blob = cv::dnn::blobFromImage(inputImage, 1 / 255.0, cv::Size(mInputWidth, mInputHeight), cv::Scalar(0, 0, 0), true, false);
+        size_t tpixels = static_cast<size_t>(mInputHeight) * static_cast<size_t>(mInputWidth) * 3;
+        std::array<int64_t, 4> input_shape_info{1, 3, mInputHeight, mInputWidth};
+        auto allocator_info = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU);
+        Ort::Value input_tensor_ = Ort::Value::CreateTensor<float>(allocator_info, blob.ptr<float>(), tpixels, input_shape_info.data(), input_shape_info.size());
+        const std::array<const char *, 1> inputNames = {mInputNodeName.c_str()};
+        const std::array<const char *, 1> outNames = {mOutputNodeName.c_str()};
+        std::vector<Ort::Value> ort_outputs = mSession.Run(Ort::RunOptions{nullptr}, inputNames.data(), &input_tensor_, 1, outNames.data(), outNames.size());
+        if (ort_outputs.empty())
+        {
+            return false;
+        }
+        const float *pdata = ort_outputs[0].GetTensorMutableData<float>();
+        if (!pdata)
+        {
+            return false;
+        }
+        const float scale = static_cast<float>(mInputWidth) / static_cast<float>(side); // 方形裁窗: padX=padY=0
+        std::vector<DetectObject> cropDets;
+        decodePoseOutput(pdata, side, side, scale, 0, 0, cropDets);
+
+        // 位置匹配回原目标(§8.5.1b 纪律: 禁 maxconf)
+        cv::Rect targetR(target.x1, target.y1, bw, bh);
+        int best = -1;
+        float bestIoU = matchIoU;
+        for (size_t i = 0; i < cropDets.size(); ++i)
+        {
+            DetectObject d = cropDets[i];
+            d.x1 = std::max(0, std::min(W, d.x1 + xa));
+            d.y1 = std::max(0, std::min(H, d.y1 + ya));
+            d.x2 = std::max(0, std::min(W, d.x2 + xa));
+            d.y2 = std::max(0, std::min(H, d.y2 + ya));
+            cropDets[i] = d;
+            if (d.x2 <= d.x1 || d.y2 <= d.y1)
+            {
+                continue;
+            }
+            cv::Rect inter = targetR & cv::Rect(d.x1, d.y1, d.x2 - d.x1, d.y2 - d.y1);
+            const double interArea = static_cast<double>(inter.width) * static_cast<double>(inter.height);
+            const double unionArea = static_cast<double>(bw * bh)
+                + static_cast<double>((d.x2 - d.x1) * (d.y2 - d.y1)) - interArea;
+            if (unionArea <= 0.0)
+            {
+                continue;
+            }
+            const float io = static_cast<float>(interArea / unionArea);
+            if (io > bestIoU)
+            {
+                bestIoU = io;
+                best = static_cast<int>(i);
+            }
+        }
+        if (best < 0)
+        {
+            return false;
+        }
+        out = cropDets[static_cast<size_t>(best)];
+        return true;
+    }
+
+    bool AlgorithmOnYolo::roiUpgradePose(cv::Mat &image, DetectObject &det, float pad, float matchIoU)
+    {
+        if (!mEngine)
+        {
+            return false;
+        }
+        DetectObject up;
+        if (!mEngine->runPoseRoi(image, det, pad, matchIoU, up) || !up.poseOk)
+        {
+            return false;
+        }
+        det.hd = up.hd;
+        det.poseOk = true;
+        det.poseFromRoi = true;
+        return true;
+    }
+
+
 }

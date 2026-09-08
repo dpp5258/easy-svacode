@@ -40,10 +40,29 @@ public class HDeviceController extends BaseController {
      * 获取设备信息列表
      */
     @GetMapping("/list")
-    public TableDataInfo list(HDevice device) {
+    public TableDataInfo list(HDevice device,
+        @org.springframework.web.bind.annotation.RequestParam(value = "deviceType", required = false) String deviceType) {
+        // 前端用 deviceType=GB28181|RTSP 筛选（绑定到 domain 字段 device_type）
+        if (StringUtils.isNotEmpty(deviceType)) {
+            device.setDevice_type(deviceType);
+        }
         List<HDevice> list = hDeviceService.selectDeviceList(device, getUserId());
         Object token = redisTemplate.boundValueOps("token").get();
         return getDataTable(list);
+    }
+
+    /**
+     * 手动触发一次从 WVP 同步国标设备（配合自动轮询，供"从WVP同步"按钮调用）
+     */
+    @PreAuthorize("@ss.hasPermi('waring:device:add')")
+    @PostMapping("/gb/sync")
+    public AjaxResult syncGbDevices() {
+        try {
+            hDeviceService.syncGbDevicesOnce();
+            return success("国标设备同步完成");
+        } catch (Exception e) {
+            return error("国标设备同步失败: " + e.getMessage());
+        }
     }
 
     /**
@@ -104,12 +123,12 @@ public class HDeviceController extends BaseController {
     }
 
     /**
-     * 删除设备
+     * 删除设备(国标设备=彻底删除: 停模拟器 + 从WVP删除 + 删本地行; 返回汇总文案)
      */
     @PreAuthorize("@ss.hasPermi('waring:device:remove')")
     @DeleteMapping("/{apeIds}")
     public AjaxResult remove(@PathVariable String[] apeIds) {
-        return toAjax(hDeviceService.deleteDeviceByApeIds(apeIds));
+        return success(hDeviceService.deleteDeviceByApeIds(apeIds));
     }
 
     /**
@@ -169,6 +188,67 @@ public class HDeviceController extends BaseController {
     @GetMapping("/monitor/{apeId}/preview")
     public AjaxResult previewMonitor(@PathVariable String apeId) {
         return success(hDeviceService.previewMonitor(apeId));
+    }
+
+    /**
+     * 云台控制（摄像头转动/变焦/停止）：easySVA 适配 → WVP PTZ SIP 信令 → IPC。
+     * command: left/right/up/down/upleft/upright/downleft/downright/zoomin/zoomout/stop
+     */
+    @PreAuthorize("@ss.hasPermi('waring:device:start')")
+    @PostMapping("/ptz/{apeId}")
+    public AjaxResult ptzControl(@PathVariable String apeId,
+        @org.springframework.web.bind.annotation.RequestParam("command") String command,
+        @org.springframework.web.bind.annotation.RequestParam(value = "horizonSpeed", required = false) Integer horizonSpeed,
+        @org.springframework.web.bind.annotation.RequestParam(value = "verticalSpeed", required = false) Integer verticalSpeed,
+        @org.springframework.web.bind.annotation.RequestParam(value = "zoomSpeed", required = false) Integer zoomSpeed) {
+        try {
+            String msg = hDeviceService.ptzControl(apeId, command, horizonSpeed, verticalSpeed, zoomSpeed);
+            return success(msg);
+        } catch (Exception e) {
+            return error("云台控制失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 云台归位（回中）
+     */
+    @PreAuthorize("@ss.hasPermi('waring:device:start')")
+    @PostMapping("/ptz/{apeId}/home")
+    public AjaxResult ptzHome(@PathVariable String apeId) {
+        try {
+            String msg = hDeviceService.ptzHome(apeId);
+            return success(msg);
+        } catch (Exception e) {
+            return error("云台归位失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 预置位调用（转动到指定预置角度）
+     */
+    @PreAuthorize("@ss.hasPermi('waring:device:start')")
+    @PostMapping("/ptz/{apeId}/preset/{presetId}/call")
+    public AjaxResult presetCall(@PathVariable String apeId, @PathVariable int presetId) {
+        try {
+            String msg = hDeviceService.ptzPresetCall(apeId, presetId);
+            return success(msg);
+        } catch (Exception e) {
+            return error("调用预置位失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 预置位设置（当前位置存为指定编号）
+     */
+    @PreAuthorize("@ss.hasPermi('waring:device:start')")
+    @PostMapping("/ptz/{apeId}/preset/{presetId}/add")
+    public AjaxResult presetAdd(@PathVariable String apeId, @PathVariable int presetId) {
+        try {
+            String msg = hDeviceService.ptzPresetAdd(apeId, presetId);
+            return success(msg);
+        } catch (Exception e) {
+            return error("设置预置位失败: " + e.getMessage());
+        }
     }
 
     private AjaxResult buildMonitorActionResult(boolean success, String action, String shortMessage, HDevice device) {

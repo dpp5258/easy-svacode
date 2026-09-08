@@ -1,8 +1,9 @@
-﻿#ifndef ANALYZER_GENERATEALARMVIDEO_H
+#ifndef ANALYZER_GENERATEALARMVIDEO_H
 #define ANALYZER_GENERATEALARMVIDEO_H
 #include <vector>
 #include <queue>
 #include <mutex>
+#include <string>
 extern "C"
 {
 #include "libavcodec/avcodec.h"

@@ -41,6 +41,13 @@ namespace SVAAnalyzer
 		bool runInference(cv::Mat &image, std::vector<DetectObject> &detects);
 		bool isGpuEnabled() const { return mGpuEnabled; }
 		std::string getActiveProvider() const { return mActiveProvider; }
+		/**
+		 * @brief ROI 放大二次推理(算法规则.md §8.5.1): 以 target 为中心裁 pad*max(w,h) 正方形窗,
+		 *        letterbox 640 推理 → decode → 坐标平移回原图 → 按与 target 的 IoU 位置匹配(禁 maxconf)。
+		 * @return true 且 out 为匹配到的检测(原图坐标, hd/poseOk/keypoints 齐备)
+		 */
+		bool runPoseRoi(cv::Mat &fullImage, const DetectObject &target,
+						float pad, float matchIoU, DetectObject &out);
 
 	private:
 		Config *mConfig;
@@ -66,8 +73,7 @@ namespace SVAAnalyzer
 		bool decodeDirectDetections(const float *pdata, int imageWidth, int imageHeight, std::vector<DetectObject> &detects);
 		// (1,56,8400): 4 box + 1 conf + 17*3 kpts(x,y,conf); letterbox gray-114 input (scale/pad offsets in 640 space)
 		bool decodePoseOutput(const float *pdata, int imageWidth, int imageHeight,
-							  float scale, int padX, int padY, std::vector<DetectObject> &detects);
-	};
+							  float scale, int padX, int padY, std::vector<DetectObject> &detects);	};
 	class AlgorithmOnYolo : public Algorithm
 	{
 	public:
@@ -76,6 +82,8 @@ namespace SVAAnalyzer
 
 	public:
 		virtual bool objectDetect(cv::Mat &image, std::vector<DetectObject> &detects);
+		/** ROI 升级门面: 成功则把 ROI 检出的 hd/poseOk 写回 det(不改 box/keypoints, 保持追踪语义), 置 poseFromRoi=true */
+		bool roiUpgradePose(cv::Mat &image, DetectObject &det, float pad, float matchIoU);
 
 	private:
 		std::vector<std::string> mClassNames;

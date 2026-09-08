@@ -3,6 +3,9 @@
 
 #include <string>
 #include <vector>
+#include <cstdint>
+#include <functional>
+#include <unordered_map>
 #include <opencv2/opencv.hpp>
 #include <iostream>
 #include <filesystem>
@@ -46,6 +49,30 @@ namespace SVAAnalyzer
 		Scheduler *mScheduler;
 		Control *mControl;
 
+		// ---- [ROI 放大 + 三档] 按框退避(追踪在 Worker 才打 trackId, 故此处用量化框位置做键) ----
+		struct RoiBackoffKey
+		{
+			int qx = 0;
+			int qy = 0;
+			int qh = 0;
+			bool operator==(const RoiBackoffKey &o) const { return qx == o.qx && qy == o.qy && qh == o.qh; }
+		};
+		struct RoiBackoffKeyHash
+		{
+			size_t operator()(const RoiBackoffKey &k) const
+			{
+				return static_cast<size_t>(k.qx) ^ (static_cast<size_t>(k.qy) << 1) ^ (static_cast<size_t>(k.qh) << 2);
+			}
+		};
+		struct RoiBackoff
+		{
+			int fail = 0;
+			int64_t lastMs = 0;
+		};
+		std::unordered_map<RoiBackoffKey, RoiBackoff, RoiBackoffKeyHash> mRoiBackoff;
+		uint64_t mRoiAttempt = 0;
+		uint64_t mRoiOk = 0;
+		int64_t mRoiLogMs = 0;
 	private:
 	};
 }

@@ -13,4 +13,10 @@ public interface ZlmServerMapper {
     ZlmServer selectEnabledById(Long id);
 
     List<ZlmServer> selectEnabledList();
+
+    /** 按 id 查(不限 enabled, 供启动自愈等场景)。 */
+    ZlmServer selectZlmServerById(Long id);
+
+    /** 动态更新(只更新非空字段), 启动自愈用来改 host。 */
+    int updateZlmServer(ZlmServer server);
 }

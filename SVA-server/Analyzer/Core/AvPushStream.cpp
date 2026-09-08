@@ -45,149 +45,115 @@ namespace SVAAnalyzer
             return false;
         }
 
-        // 修改点1：先尝试硬件编码器 h264_nvenc；不可用或打开失败（无 GPU/驱动）时回退软件 H.264
+        // ============ 修改点: 编码器选择(支持自动回退) ============
+        // 优先尝试 NVIDIA h264_nvenc 硬件编码;若因驱动过旧打不开
+        // (例如 nvenc API 13.0 需要驱动 >=590,旧驱动只有 12.2),
+        // avcodec_open2 会失败,此处自动回退到软件 libx264 编码。
+        const char *encoderCandidates[] = {"h264_nvenc", "libx264"};
         const AVCodec *videoCodec = nullptr;
-        int encTry = 0;
-        while (true)
-        {
-            if (encTry == 0)
-            {
-                videoCodec = avcodec_find_encoder_by_name("h264_nvenc");
-                if (!videoCodec)
-                {
-                    LOGI("h264_nvenc not found, falling back to software H.264 encoder");
-                    videoCodec = avcodec_find_encoder(AV_CODEC_ID_H264);
-                }
-            }
-            else
-            {
-                LOGI("h264_nvenc open failed (no GPU/driver), falling back to software H.264 encoder");
-                videoCodec = avcodec_find_encoder(AV_CODEC_ID_H264);
-            }
-            if (!videoCodec)
-            {
-                LOGI("avcodec_find_encoder error: pushStreamUrl=%s", pushStreamUrl.data());
-                return false;
-            }
-        mVideoCodecCtx = avcodec_alloc_context3(videoCodec);
-        if (!mVideoCodecCtx)
-        {
-            LOGI("avcodec_alloc_context3 error: pushStreamUrl=%s", pushStreamUrl.data());
-            return false;
-        }
-        // 根据分辨率和帧率设置更保守的默认码率，避免多路推流时编码器打满
+        AVDictionary *video_codec_options = NULL;
+        bool encoderOpened = false;
+
+        // 根据分辨率和帧率设置更保守的默认码率,避免多路推流时编码器打满
         const int pixels = videoWidth * videoHeight;
         int bit_rate = 4 * 1024 * 1024;
-        if (pixels >= 3840 * 2160)
-        {
-            bit_rate = 12 * 1024 * 1024;
-        }
-        else if (pixels >= 2560 * 1440)
-        {
-            bit_rate = 8 * 1024 * 1024;
-        }
-        else if (pixels >= 1920 * 1080)
-        {
-            bit_rate = 6 * 1024 * 1024;
-        }
-        else if (pixels >= 1280 * 720)
-        {
-            bit_rate = 4 * 1024 * 1024;
-        }
-        else
-        {
-            bit_rate = 2 * 1024 * 1024;
-        }
-        if (videoFps > 30)
-        {
-            bit_rate = bit_rate * videoFps / 30;
-        }
-        if (bit_rate < 2 * 1024 * 1024)
-        {
-            bit_rate = 2 * 1024 * 1024;
-        }
-        if (bit_rate > 16 * 1024 * 1024)
-        {
-            bit_rate = 16 * 1024 * 1024;
-        }
-        // CBR：Constant BitRate - 固定比特率
-        //        mVideoCodecCtx->flags |= AV_CODEC_FLAG_QSCALE;
-        //        mVideoCodecCtx->bit_rate = bit_rate;
-        //        mVideoCodecCtx->rc_min_rate = bit_rate;
-        //        mVideoCodecCtx->rc_max_rate = bit_rate;
-        //        mVideoCodecCtx->bit_rate_tolerance = bit_rate;
+        if (pixels >= 3840 * 2160) { bit_rate = 12 * 1024 * 1024; }
+        else if (pixels >= 2560 * 1440) { bit_rate = 8 * 1024 * 1024; }
+        else if (pixels >= 1920 * 1080) { bit_rate = 6 * 1024 * 1024; }
+        else if (pixels >= 1280 * 720) { bit_rate = 4 * 1024 * 1024; }
+        else { bit_rate = 2 * 1024 * 1024; }
+        if (videoFps > 30) { bit_rate = bit_rate * videoFps / 30; }
+        if (bit_rate < 2 * 1024 * 1024) { bit_rate = 2 * 1024 * 1024; }
+        if (bit_rate > 16 * 1024 * 1024) { bit_rate = 16 * 1024 * 1024; }
 
-        // VBR
-        mVideoCodecCtx->flags |= AV_CODEC_FLAG_QSCALE;
-        mVideoCodecCtx->rc_min_rate = bit_rate;
-        mVideoCodecCtx->rc_max_rate = bit_rate;
-        mVideoCodecCtx->bit_rate = bit_rate;
-        mVideoCodecCtx->bit_rate_tolerance = bit_rate / 2;
-
-        // ABR：Average Bitrate - 平均码率
-        //        mDstVimVideoCodecCtxdeoCodecCtx->bit_rate = bit_rate;
-
-        mVideoCodecCtx->codec_id = videoCodec->id;
-        mVideoCodecCtx->pix_fmt = AV_PIX_FMT_YUV420P;
-        mVideoCodecCtx->codec_type = AVMEDIA_TYPE_VIDEO;
-        mVideoCodecCtx->width = videoWidth;
-        mVideoCodecCtx->height = videoHeight;
-        mVideoCodecCtx->time_base = {1, videoFps};
-        //        mDstVideoCodecCtx->framerate = { mDstVideoFps, 1 };
-        mVideoCodecCtx->gop_size = 25;
-        mVideoCodecCtx->max_b_frames = 0;
-        mVideoCodecCtx->thread_count = 5;
-        mVideoCodecCtx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER; // 添加PPS、SPS
-        AVDictionary *video_codec_options = NULL;
-
-        // 修改点2：根据实际使用的编码器设置不同选项
-        if (mVideoCodecCtx->codec_id == AV_CODEC_ID_H264)
+        for (const char *encName : encoderCandidates)
         {
-            if (strcmp(videoCodec->name, "h264_nvenc") == 0)
+            const AVCodec *cand = avcodec_find_encoder_by_name(encName);
+            if (!cand)
             {
-                // NVENC 硬件编码器选项：低延迟、恒定码率
-                char bitrate_k[32] = {0};
-                char maxrate_k[32] = {0};
-                char bufsize_k[32] = {0};
-                std::snprintf(bitrate_k, sizeof(bitrate_k), "%dk", bit_rate / 1024);
-                std::snprintf(maxrate_k, sizeof(maxrate_k), "%dk", bit_rate / 1024);
-                std::snprintf(bufsize_k, sizeof(bufsize_k), "%dk", (bit_rate / 1024) * 2);
-                av_dict_set(&video_codec_options, "preset", "llhp", 0); // 低延迟高性能
-                av_dict_set(&video_codec_options, "tune", "ll", 0);     // 低延迟
-                av_dict_set(&video_codec_options, "rc", "cbr", 0);      // 恒定码率
-                av_dict_set(&video_codec_options, "b", bitrate_k, 0);
-                av_dict_set(&video_codec_options, "maxrate", maxrate_k, 0);
-                av_dict_set(&video_codec_options, "bufsize", bufsize_k, 0);
+                LOGI("encoder %s not found in this build", encName);
+                continue;
             }
-            else
-            {
-                // 软件x264选项
-                av_dict_set(&video_codec_options, "preset", "superfast", 0);
-                av_dict_set(&video_codec_options, "tune", "zerolatency", 0);
-            }
-        }
-        // H.265 部分（若有需要可类似处理）
-        if (mVideoCodecCtx->codec_id == AV_CODEC_ID_H265)
-        {
-            av_dict_set(&video_codec_options, "preset", "ultrafast", 0);
-            av_dict_set(&video_codec_options, "tune", "zero-latency", 0);
-        }
 
-            if (avcodec_open2(mVideoCodecCtx, videoCodec, &video_codec_options) >= 0)
+            if (mVideoCodecCtx)
             {
+                avcodec_free_context(&mVideoCodecCtx);
+                mVideoCodecCtx = nullptr;
+            }
+            mVideoCodecCtx = avcodec_alloc_context3(cand);
+            if (!mVideoCodecCtx)
+            {
+                LOGI("avcodec_alloc_context3 error: enc=%s", encName);
                 break;
             }
-            LOGI("avcodec_open2 error (try %d): pushStreamUrl=%s", encTry + 1, pushStreamUrl.data());
-            avcodec_free_context(&mVideoCodecCtx);
-            mVideoCodecCtx = nullptr;
-            encTry++;
-            if (encTry >= 2)
+
+            // VBR
+            mVideoCodecCtx->flags |= AV_CODEC_FLAG_QSCALE;
+            mVideoCodecCtx->rc_min_rate = bit_rate;
+            mVideoCodecCtx->rc_max_rate = bit_rate;
+            mVideoCodecCtx->bit_rate = bit_rate;
+            mVideoCodecCtx->bit_rate_tolerance = bit_rate / 2;
+
+            mVideoCodecCtx->codec_id = cand->id;
+            mVideoCodecCtx->pix_fmt = AV_PIX_FMT_YUV420P;
+            mVideoCodecCtx->codec_type = AVMEDIA_TYPE_VIDEO;
+            mVideoCodecCtx->width = videoWidth;
+            mVideoCodecCtx->height = videoHeight;
+            mVideoCodecCtx->time_base = {1, videoFps};
+            mVideoCodecCtx->gop_size = 25;
+            mVideoCodecCtx->max_b_frames = 0;
+            mVideoCodecCtx->thread_count = 5;
+            mVideoCodecCtx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER; // 添加PPS、SPS
+
+            av_dict_free(&video_codec_options);
+            video_codec_options = NULL;
+            if (mVideoCodecCtx->codec_id == AV_CODEC_ID_H264)
             {
-                return false;
+                if (strcmp(cand->name, "h264_nvenc") == 0)
+                {
+                    // NVENC 硬件编码器选项:低延迟、恒定码率
+                    char bitrate_k[32] = {0};
+                    char maxrate_k[32] = {0};
+                    char bufsize_k[32] = {0};
+                    std::snprintf(bitrate_k, sizeof(bitrate_k), "%dk", bit_rate / 1024);
+                    std::snprintf(maxrate_k, sizeof(maxrate_k), "%dk", bit_rate / 1024);
+                    std::snprintf(bufsize_k, sizeof(bufsize_k), "%dk", (bit_rate / 1024) * 2);
+                    av_dict_set(&video_codec_options, "preset", "llhp", 0);
+                    av_dict_set(&video_codec_options, "tune", "ll", 0);
+                    av_dict_set(&video_codec_options, "rc", "cbr", 0);
+                    av_dict_set(&video_codec_options, "b", bitrate_k, 0);
+                    av_dict_set(&video_codec_options, "maxrate", maxrate_k, 0);
+                    av_dict_set(&video_codec_options, "bufsize", bufsize_k, 0);
+                }
+                else
+                {
+                    // 软件 x264 选项
+                    av_dict_set(&video_codec_options, "preset", "superfast", 0);
+                    av_dict_set(&video_codec_options, "tune", "zerolatency", 0);
+                }
             }
+            // H.265 部分(若有需要可类似处理)
+            if (mVideoCodecCtx->codec_id == AV_CODEC_ID_H265)
+            {
+                av_dict_set(&video_codec_options, "preset", "ultrafast", 0);
+                av_dict_set(&video_codec_options, "tune", "zero-latency", 0);
+            }
+
+            if (avcodec_open2(mVideoCodecCtx, cand, &video_codec_options) >= 0)
+            {
+                videoCodec = cand;
+                encoderOpened = true;
+                LOGI("video encoder opened: %s", cand->name);
+                break;
+            }
+            LOGI("avcodec_open2 error: enc=%s, will try next candidate; pushStreamUrl=%s",
+                 cand->name, pushStreamUrl.data());
         }
-        if (!mVideoCodecCtx)
+        av_dict_free(&video_codec_options);
+
+        if (!encoderOpened || !videoCodec)
         {
+            LOGI("no usable video encoder: pushStreamUrl=%s", pushStreamUrl.data());
             return false;
         }
         mVideoStream = avformat_new_stream(mFmtCtx, videoCodec);

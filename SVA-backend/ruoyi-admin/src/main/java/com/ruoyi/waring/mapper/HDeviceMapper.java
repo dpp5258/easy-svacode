@@ -45,5 +45,15 @@ public interface HDeviceMapper {
 
     int getDeviceEnableNumByOrg(HDevice device);
 
+    // ---- GB28181 国标接入 ----
+    int upsertGbDevice(HDevice device);
+
+    HDevice selectByGbId(String gbId);
+
+    int updateStatusByApeId(@Param("apeId") String apeId, @Param("status") String status,
+                            @Param("isOnline") String isOnline);
+
+    /** 平台设置"设为全部国标设备平台": 把 wvpServerId 一键写到所有国标设备行, 返回受影响行数。 */
+    int updateWvpServerIdForAllGb(@Param("wvpServerId") Long wvpServerId);
 
 }

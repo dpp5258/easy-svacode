@@ -102,6 +102,23 @@ namespace SVAAnalyzer
 		double maxSpeedPxPerSec = 0.0;
 		double maxDisplacementPx = 0.0;
 		double hdThreshold = 0.0; // 睡岗 pose: 低头判据 hd ≤ hdThreshold (0 时用默认 0.12)
+		// ---- 部署链增强(算法规则.md §6/§10, 角色2自研): pose 参数 / ROI / 三档 / 框级兜底 ----
+		double thetaDesk = 0.0;    // C3 趴桌阈值(hd≤), 0=默认 0.0
+		double windowSec = 0.0;    // C2 窗口 W, 0=默认 4.0
+		double ratioP = 0.0;       // C2 占比 p, 0=默认 0.5
+		double gapTolSec = 0.0;    // 段内间隙容忍, 0=默认 0.5
+		double gapSec = 0.0;       // GAP, 0=默认 1.5
+		double deskSec = 0.0;      // 趴桌时长, 0=默认 1.5
+		int roiEnabled = -1;       // -1/1=默认开(pose 规则), 0=关(仅本规则)
+		double roiPad = 0.0;       // 裁窗 pad, 0=默认 2.5
+		double roiMatchIoU = 0.0;  // ROI 位置匹配 IoU, 0=默认 0.15
+		int roiBudget = 0;         // 每帧 ROI 次数, 0=默认 4
+		double roiRecheckMs = 0.0; // 失败退避重试间隔, 0=默认 2500
+		double tierHiPx = 0.0;     // tier1 边界(640 空间), 0=默认 100
+		double tierLoPx = 0.0;     // tier2 边界, 0=默认 50
+		double roiMinPx = 0.0;     // ROI 下限, 0=默认 40
+		double boxFallbackMs = 8000.0; // 框级兜底时长(静止+pose不可用), 0=关; 默认开(Q1决策)
+		int boxFallbackTierMin = 2;    // 兜底最低档位, 0=默认 2
 		double directionAngleDeg = 0.0;
 		double directionToleranceDeg = 30.0;
 		std::string sequenceId;
@@ -791,6 +808,27 @@ namespace SVAAnalyzer
 					tryParseJsonNumber(item["theta_hd"], hdThreshold))
 				{
 					rule.hdThreshold = hdThreshold;
+				}
+				// ---- 部署链参数(可选键, 缺省=默认值, 向后兼容) ----
+				{
+					double tD = 0.0;
+					if (tryParseJsonNumber(item["thetaDesk"], tD) || tryParseJsonNumber(item["theta_desk"], tD)) rule.thetaDesk = tD;
+					if (tryParseJsonNumber(item["windowSec"], tD) || tryParseJsonNumber(item["W"], tD)) rule.windowSec = tD;
+					if (tryParseJsonNumber(item["ratioP"], tD) || tryParseJsonNumber(item["p"], tD)) rule.ratioP = tD;
+					if (tryParseJsonNumber(item["gapTolSec"], tD) || tryParseJsonNumber(item["gap_tol"], tD)) rule.gapTolSec = tD;
+					if (tryParseJsonNumber(item["gapSec"], tD) || tryParseJsonNumber(item["GAP"], tD)) rule.gapSec = tD;
+					if (tryParseJsonNumber(item["deskSec"], tD) || tryParseJsonNumber(item["T_desk"], tD)) rule.deskSec = tD;
+					if (tryParseJsonNumber(item["roiPad"], tD) || tryParseJsonNumber(item["roi_pad"], tD)) rule.roiPad = tD;
+					if (tryParseJsonNumber(item["roiMatchIoU"], tD) || tryParseJsonNumber(item["roiMatch"], tD)) rule.roiMatchIoU = tD;
+					if (tryParseJsonNumber(item["roiRecheckMs"], tD) || tryParseJsonNumber(item["roiRecheck"], tD)) rule.roiRecheckMs = tD;
+					if (tryParseJsonNumber(item["tierHi"], tD) || tryParseJsonNumber(item["tierHiPx"], tD)) rule.tierHiPx = tD;
+					if (tryParseJsonNumber(item["tierLo"], tD) || tryParseJsonNumber(item["tierLoPx"], tD)) rule.tierLoPx = tD;
+					if (tryParseJsonNumber(item["roiMin"], tD) || tryParseJsonNumber(item["roiMinPx"], tD)) rule.roiMinPx = tD;
+					if (tryParseJsonNumber(item["boxFallbackMs"], tD) || tryParseJsonNumber(item["boxMs"], tD)) rule.boxFallbackMs = tD;
+					if (tryParseJsonNumber(item["roiEnabled"], tD)) rule.roiEnabled = static_cast<int>(tD);
+					if (tryParseJsonNumber(item["roiBudget"], tD)) rule.roiBudget = static_cast<int>(tD);
+					if (tryParseJsonNumber(item["boxFallbackTierMin"], tD)) rule.boxFallbackTierMin = static_cast<int>(tD);
+					if (tryParseJsonNumber(item["fbTierMin"], tD)) rule.boxFallbackTierMin = static_cast<int>(tD);
 				}
 				if (item["sequenceId"].isString())
 				{
